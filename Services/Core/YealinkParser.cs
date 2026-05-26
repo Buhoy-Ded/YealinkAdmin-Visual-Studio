@@ -6,6 +6,20 @@ public static class YealinkParser
 {
     public static PhoneInfo? Parse(string ipAddress, string response)
     {
+        // 403 — телефон доступен, но Action URI отключён
+        if (response == "__FORBIDDEN__")
+        {
+            return new PhoneInfo
+            {
+                IpAddress = ipAddress,
+                MacAddress = "unknown",
+                Account = "Ошибка 403",
+                Model = "Yealink (error 403)",
+                IsOnline = true,
+                LastSeen = DateTime.UtcNow
+            };
+        }
+
         var firmware = GetValue(response, "FirmwareVersion");
         if (firmware == null) return null;
 
@@ -37,7 +51,7 @@ public static class YealinkParser
         };
     }
 
-    private static string? GetValue(string source, string key)
+    public static string? GetValue(string source, string key)
     {
         foreach (var line in source.Split('\n', '\r'))
         {

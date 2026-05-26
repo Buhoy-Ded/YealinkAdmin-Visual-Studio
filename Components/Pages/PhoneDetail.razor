@@ -1,0 +1,260 @@
+﻿@page "/config/{Ip}"
+@inject PhoneStore Store
+@inject NavigationManager Navigation
+@inject SecureCredentialStorage Credentials
+@inject YealinkStatusClient StatusClient
+@rendermode RenderMode.InteractiveServer
+
+<h3>Конфигурация телефона</h3>
+
+@if (_phone == null)
+{
+    <p>Телефон не найден. <a href="/">Назад</a></p>
+}
+else
+{
+    <div class="phone-header">
+        <p><strong>IP:</strong> @_phone.IpAddress</p>
+        <p><strong>MAC:</strong> @_phone.MacAddress</p>
+        <p><strong>Модель:</strong> @_phone.Model</p>
+        <p><strong>Аккаунт:</strong> @_phone.Account</p>
+    </div>
+
+    @if (!Credentials.IsAdminConfigured)
+    {
+        <div class="alert alert-warning">
+            <button @onclick="ShowAdminLogin">Войти как администратор</button> для редактирования.
+        </div>
+    }
+
+    <div class="tabs">
+        <button class="@(_activeTab == "status" ? "active" : "")" @onclick='() => _activeTab = "status"'>Status</button>
+        <button class="@(_activeTab == "config" ? "active" : "")" @onclick='() => _activeTab = "config"'>Config</button>
+        <button class="@(_activeTab == "panel" ? "active" : "")" @onclick='() => _activeTab = "panel"'>Panel</button>
+    </div>
+
+    @if (_activeTab == "status")
+    {
+        <div class="tab-content">
+            <h4>Статус телефона</h4>
+
+            <button @onclick="LoadStatusFromWeb" disabled="@_loadingStatus">@(_loadingStatus ? "Загрузка..." : "Обновить статус")</button>
+
+            @if (_statusError != null)
+            {
+                <div class="alert alert-danger">@_statusError</div>
+            }
+
+            @if (FilteredStatusFields.Any())
+            {
+                <table class="status-table">
+                    <tbody>
+                        @foreach (var kvp in FilteredStatusFields)
+                        {
+                            <tr>
+                                <td class="status-label">@kvp.Key</td>
+                                <td class="status-value">@kvp.Value</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+            else if (!_loadingStatus && _statusError == null)
+            {
+                <p>Нажмите "Обновить статус" для загрузки данных.</p>
+            }
+
+            @if (!string.IsNullOrEmpty(_rawHtmlPreview))
+            {
+                <details>
+                    <summary>Отладка: сырой HTML (первые 2000 символов)</summary>
+                    <pre class="diagnostics">@_rawHtmlPreview</pre>
+                </details>
+            }
+        </div>
+    }
+    else if (_activeTab == "config")
+    {
+        <div class="tab-content">
+            @if (_phone.IsForbidden)
+            {
+                <div class="alert alert-warning">
+                    <p>⚠️ Редактирование недоступно — Action URI отключён.</p>
+                    <button @onclick="OpenWebInterface">Открыть веб-интерфейс</button>
+                </div>
+            }
+            else if (Credentials.IsAdminConfigured)
+            {
+                <h4>Редактирование конфигурации</h4>
+                <div class="form-group">
+                    <label>Account:</label>
+                    <input type="text" @bind="_editAccount" />
+                </div>
+                <button @onclick="SaveConfig">Save</button>
+                <button @onclick="DownloadConfig">Download Config</button>
+                <button @onclick="UploadConfig">Upload Config</button>
+                <button @onclick="Reboot">Reboot</button>
+            }
+            else
+            {
+                <p>Требуется авторизация администратора.</p>
+            }
+        </div>
+    }
+    else if (_activeTab == "panel")
+    {
+        <div class="tab-content">
+            <h4>Расширенная панель</h4>
+            <p>Coming soon...</p>
+        </div>
+    }
+
+    <button @onclick="GoBack">Назад</button>
+}
+
+@if (_showAdminLogin)
+{
+    <div class="modal">
+        <div class="modal-content">
+            <h4>Администраторский доступ</h4>
+            <div>
+                <label>Логин:</label>
+                <input type="text" @bind="_adminUsername" />
+            </div>
+            <div>
+                <label>Пароль:</label>
+                <input type="password" @bind="_adminPassword" />
+            </div>
+            <button @onclick="AdminLogin">Войти</button>
+            <button @onclick='() => _showAdminLogin = false'>Отмена</button>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string Ip { get; set; } = string.Empty;
+    private PhoneInfo? _phone;
+    private string _activeTab = "status";
+    private bool _showAdminLogin;
+    private string _adminUsername = string.Empty;
+    private string _adminPassword = string.Empty;
+    private string _editAccount = string.Empty;
+
+    private bool _loadingStatus;
+    private string? _statusError;
+    private string _rawHtmlPreview = string.Empty;
+
+    // Поля, которые скрываем из статуса
+    private static readonly HashSet<string> _hiddenStatusFields = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Device Certificate",
+        "Internet Port",
+        "WAN Port Type",
+        "WAN IP Address",
+        "Subnet Mask",
+        "Gateway",
+        "Primary DNS",
+        "Secondary DNS",
+        "VLAN ID",
+        "WAN Port Status",
+        "PC Port Status",
+        "IPv4",
+        "IPv6",
+        "Network",
+        "Network Common",
+        "Account Status",
+        "Ext"
+    };
+
+    private IEnumerable<KeyValuePair<string, string>> FilteredStatusFields
+    {
+        get
+        {
+            if (_phone?.StatusFields == null) return Enumerable.Empty<KeyValuePair<string, string>>();
+            return _phone.StatusFields.Where(kvp => !_hiddenStatusFields.Contains(kvp.Key));
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        _phone = Store.GetByIp(Ip);
+        if (_phone != null)
+            _editAccount = _phone.Account;
+    }
+
+    private void ShowAdminLogin() => _showAdminLogin = true;
+
+    private void AdminLogin()
+    {
+        if (!string.IsNullOrWhiteSpace(_adminUsername) && !string.IsNullOrWhiteSpace(_adminPassword))
+        {
+            Credentials.SetAdminCredentials(_adminUsername, _adminPassword, TimeSpan.FromMinutes(30));
+            _showAdminLogin = false;
+        }
+    }
+
+    private async Task LoadStatusFromWeb()
+    {
+        if (_phone == null) return;
+
+        var creds = Credentials.GetAdminCredentials();
+        if (creds == null)
+        {
+            _statusError = "Требуется admin-авторизация";
+            return;
+        }
+
+        _loadingStatus = true;
+        _statusError = null;
+        _rawHtmlPreview = string.Empty;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var result = await StatusClient.GetStatusAsync(_phone.IpAddress, creds.Value.username, creds.Value.password);
+            _phone.StatusFields = result.Fields;
+
+            if (_phone.Model?.Contains("Action URI disabled") == true || _phone.Model?.Contains("Unknown") == true)
+            {
+                var betterModel = ModelResolver.ResolveFromStatus(result.Fields);
+                if (betterModel != null)
+                    _phone.Model = betterModel;
+            }
+
+            if (_phone.MacAddress == "unknown" && result.Fields.TryGetValue("MAC Address", out var mac))
+                _phone.MacAddress = mac;
+
+            Store.Upsert(_phone);
+            _statusError = null;
+            _rawHtmlPreview = result.RawHtml[..Math.Min(2000, result.RawHtml.Length)];
+        }
+        catch (Exception ex)
+        {
+            _statusError = $"Ошибка загрузки статуса: {ex.Message}";
+        }
+
+        _loadingStatus = false;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void SaveConfig()
+    {
+        if (_phone != null)
+        {
+            _phone.Account = _editAccount;
+            Store.Upsert(_phone);
+        }
+    }
+
+    private void DownloadConfig() { /* TODO */ }
+    private void UploadConfig() { /* TODO */ }
+    private void Reboot() { /* TODO */ }
+
+    private void OpenWebInterface()
+    {
+        if (_phone != null)
+            Navigation.NavigateTo($"http://{_phone.IpAddress}", forceLoad: true);
+    }
+
+    private void GoBack() => Navigation.NavigateTo("/");
+}

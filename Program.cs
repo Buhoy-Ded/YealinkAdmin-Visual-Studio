@@ -1,26 +1,40 @@
-using Microsoft.AspNetCore.StaticFiles;
 using YealinkAdmin.Components;
 using YealinkAdmin.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Включаем StaticWebAssets для Production
 builder.WebHost.UseStaticWebAssets();
 
+builder.Services.AddControllers();
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
 builder.Services.AddDataProtection();
 builder.Services.AddSingleton < SecureCredentialStorage > ();
-builder.Services.AddSingleton < YealinkApiClient > ();
 builder.Services.AddSingleton < PhoneStore > ();
+builder.Services.AddSingleton < YealinkApiClient > ();
 builder.Services.AddSingleton < YealinkScanner > ();
+builder.Services.AddSingleton < YealinkWebClient > ();
+builder.Services.AddSingleton < YealinkConfigManager > ();
+builder.Services.AddSingleton < YealinkStatusClient > (); // ← ДОБАВЛЕНО
+
+builder.Services.AddHttpClient("yealink", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(10);
+})
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+{
+    ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
+    AllowAutoRedirect = true,
+    UseCookies = true,
+    CookieContainer = new System.Net.CookieContainer()
+});
 
 var app = builder.Build();
 
 app.UseStaticFiles();
 app.UseAntiforgery();
-
+app.MapControllers();
 app.MapRazorComponents < App > ()
     .AddInteractiveServerRenderMode();
 

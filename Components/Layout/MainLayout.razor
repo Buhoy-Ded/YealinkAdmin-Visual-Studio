@@ -1,7 +1,31 @@
 ﻿@inherits LayoutComponentBase
 
 <div class="page">
+    <div class="sidebar">
+        <div class="top-row">
+            <span class="title">Admin Panel</span>
+        </div>
+        <nav>
+            <NavLink href="/" Match="NavLinkMatch.All">
+                <span>Menu</span>
+            </NavLink>
+            <NavLink href="/status">
+                <span>Status</span>
+            </NavLink>
+            <NavLink href="/config">
+                <span>Config</span>
+            </NavLink>
+            <NavLink href="/panel">
+                <span>Panel</span>
+            </NavLink>
+        </nav>
+    </div>
     <main>
-        @Body
+        <div class="top-bar">
+            <button class="btn-exit">Exit</button>
+        </div>
+        <article class="content">
+            @Body
+        </article>
     </main>
 </div>

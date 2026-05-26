@@ -2,6 +2,7 @@
 
 public static class ModelResolver
 {
+    // Ключ — первое число firmware version (до точки)
     private static readonly Dictionary<string, string> FirmwareToModel = new(StringComparer.OrdinalIgnoreCase)
     {
         ["124"] = "SIP-T33P/T33G/T31P/T31G/T31/T30P/T30",
@@ -26,7 +27,23 @@ public static class ModelResolver
 
     public static string? Resolve(string firmwareVersion)
     {
+        if (string.IsNullOrWhiteSpace(firmwareVersion)) return null;
         var code = firmwareVersion.Split('.')[0];
         return FirmwareToModel.TryGetValue(code, out var model) ? model : $"Unknown ({code})";
+    }
+
+    // Для 403-телефонов — определяем модель по status page если доступен
+    public static string? ResolveFromStatus(Dictionary<string, string> status)
+    {
+        if (status.TryGetValue("Product Name", out var product))
+            return product;
+
+        if (status.TryGetValue("Model", out var model))
+            return model;
+
+        if (status.TryGetValue("Firmware Version", out var fw))
+            return Resolve(fw);
+
+        return null;
     }
 }

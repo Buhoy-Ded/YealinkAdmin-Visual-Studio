@@ -1,9 +1,9 @@
-﻿@page "/login"
+﻿@page "/admin-login"
 @inject SecureCredentialStorage Credentials
 @inject NavigationManager Navigation
 @rendermode RenderMode.InteractiveServer
 
-<h3>Авторизация Yealink</h3>
+<h3>Администраторский доступ</h3>
 
 @if (!string.IsNullOrEmpty(_error))
 {
@@ -18,7 +18,8 @@
     <label>Пароль:</label>
     <input type="password" @bind="_password" />
 </div>
-<button @onclick="OnSubmit">Сохранить</button>
+<button @onclick="OnSubmit">Войти</button>
+<button @onclick='() => Navigation.NavigateTo("/")'>Отмена</button>
 
 @code {
     private string _username = string.Empty;
@@ -33,7 +34,7 @@
             return;
         }
 
-        Credentials.SetUserCredentials(_username, _password);
+        Credentials.SetAdminCredentials(_username, _password, TimeSpan.FromMinutes(30));
         Navigation.NavigateTo("/");
     }
 }

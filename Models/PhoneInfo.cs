@@ -8,4 +8,6 @@ public class PhoneInfo
     public string? Model { get; set; }
     public bool IsOnline { get; set; }
     public DateTime LastSeen { get; set; }
+    public bool IsForbidden { get; set; } // ← 403 флаг
+    public Dictionary<string, string> StatusFields { get; set; } = new(); // ← поля из HTML status
 }
