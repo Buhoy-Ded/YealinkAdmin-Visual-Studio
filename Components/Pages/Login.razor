@@ -32,8 +32,12 @@
             _error = "Введите логин и пароль";
             return;
         }
+<<<<<<< HEAD
 
         Credentials.SetUserCredentials(_username, _password);
+=======
+        Credentials.Set(_username, _password);
+>>>>>>> 3be700de0735421e3de6a3fa9ed52d98f83113f4
         Navigation.NavigateTo("/");
     }
 }

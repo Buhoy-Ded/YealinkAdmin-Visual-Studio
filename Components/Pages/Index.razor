@@ -1,0 +1,185 @@
+﻿@page "/"
+@using System.Net
+@inject YealinkScanner Scanner
+@inject PhoneStore Store
+@inject SecureCredentialStorage Credentials
+@inject IConfiguration Config
+@inject NavigationManager Navigation
+@rendermode RenderMode.InteractiveServer
+
+<h3>Телефоны Yealink</h3>
+
+@if (!Credentials.IsConfigured)
+{
+    <div class="alert alert-warning">
+        <a href="/login">Введите логин и пароль</a> для сканирования.
+    </div>
+}
+else
+{
+    <div class="toolbar">
+        <button @onclick="StartScanNew" disabled="@_scanning">
+            @(_scanning ? "Сканирование..." : "Добавить новые")
+        </button>
+        <button @onclick="StartScanAll" disabled="@_scanning">
+            @(_scanning ? "Сканирование..." : "Сканировать с нуля")
+        </button>
+        <input type="text"
+               placeholder="Поиск..."
+               @bind="_searchText"
+               @bind:event="oninput" />
+    </div>
+}
+
+@if (_scanning)
+{
+    <p>Найдено: @_foundCount</p>
+}
+
+@if (FilteredPhones.Any())
+{
+    <table>
+        <thead>
+            <tr>
+                <th @onclick="() => SortBy(nameof(PhoneInfo.IpAddress))">IP @SortIcon(nameof(PhoneInfo.IpAddress))</th>
+                <th @onclick="() => SortBy(nameof(PhoneInfo.Model))">Модель @SortIcon(nameof(PhoneInfo.Model))</th>
+                <th @onclick="() => SortBy(nameof(PhoneInfo.Account))">Аккаунт @SortIcon(nameof(PhoneInfo.Account))</th>
+                <th @onclick="() => SortBy(nameof(PhoneInfo.IsOnline))">Статус @SortIcon(nameof(PhoneInfo.IsOnline))</th>
+                <th @onclick="() => SortBy(nameof(PhoneInfo.LastSeen))">Последняя проверка @SortIcon(nameof(PhoneInfo.LastSeen))</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var phone in FilteredPhones)
+            {
+                <tr>
+                    <td><a href="/config/@phone.IpAddress">@phone.IpAddress</a></td>
+                    <td>@phone.Model</td>
+                    <td>@phone.Account</td>
+                    <td>@(_scanning && phone.LastSeen > _scanStart ? "Онлайн" : "Из кэша")</td>
+                    <td>@phone.LastSeen.ToLocalTime().ToString("HH:mm:ss")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    <p>Всего: @FilteredPhones.Count() из @Store.All.Count()</p>
+}
+else if (!_scanning)
+{
+    <p>Нет данных. Нажмите "Сканировать сети".</p>
+}
+
+@code {
+    private List<PhoneInfo> _phones = new();
+    private bool _scanning;
+    private int _foundCount;
+    private DateTime _scanStart;
+    private string _searchText = string.Empty;
+    private string _sortColumn = nameof(PhoneInfo.IpAddress);
+    private bool _sortAscending = true;
+
+    private IEnumerable<PhoneInfo> FilteredPhones
+    {
+        get
+        {
+            var query = _phones.AsEnumerable();
+
+            if (!string.IsNullOrWhiteSpace(_searchText))
+            {
+                var search = _searchText.Trim();
+                query = query.Where(p =>
+                    p.IpAddress.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                    (p.Model?.Contains(search, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                    p.Account.Contains(search, StringComparison.OrdinalIgnoreCase));
+            }
+
+            query = _sortColumn switch
+            {
+                nameof(PhoneInfo.IpAddress) => _sortAscending
+                    ? query.OrderBy(p => IPAddress.Parse(p.IpAddress).GetAddressBytes(), new ByteArrayComparer())
+                    : query.OrderByDescending(p => IPAddress.Parse(p.IpAddress).GetAddressBytes(), new ByteArrayComparer()),
+                nameof(PhoneInfo.Model) => _sortAscending
+                    ? query.OrderBy(p => p.Model)
+                    : query.OrderByDescending(p => p.Model),
+                nameof(PhoneInfo.Account) => _sortAscending
+                    ? query.OrderBy(p => p.Account)
+                    : query.OrderByDescending(p => p.Account),
+                nameof(PhoneInfo.IsOnline) => _sortAscending
+                    ? query.OrderBy(p => p.IsOnline)
+                    : query.OrderByDescending(p => p.IsOnline),
+                nameof(PhoneInfo.LastSeen) => _sortAscending
+                    ? query.OrderBy(p => p.LastSeen)
+                    : query.OrderByDescending(p => p.LastSeen),
+                _ => query
+            };
+
+            return query;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        _phones = Store.All.ToList();
+    }
+
+    private void SortBy(string column)
+    {
+        if (_sortColumn == column)
+            _sortAscending = !_sortAscending;
+        else
+        {
+            _sortColumn = column;
+            _sortAscending = true;
+        }
+    }
+
+    private string SortIcon(string column) => _sortColumn == column
+        ? (_sortAscending ? "▲" : "▼")
+        : "";
+
+    private async Task StartScanNew()
+    {
+        await ScanInternal(scanExisting: false);
+    }
+
+    private async Task StartScanAll()
+    {
+        Store.Clear();
+        _phones = new();
+        await InvokeAsync(StateHasChanged);
+        await ScanInternal(scanExisting: true);
+    }
+
+    private async Task ScanInternal(bool scanExisting)
+    {
+        _scanning = true;
+        _foundCount = 0;
+        _scanStart = DateTime.UtcNow;
+        await InvokeAsync(StateHasChanged);
+
+        var subnets = Config.GetSection("Yealink:Subnets").Get<string[]>() ?? Array.Empty<string>();
+
+        await foreach (var phone in Scanner.ScanAsync(subnets, scanExisting))
+        {
+            _foundCount++;
+            _phones.Add(phone);
+            await InvokeAsync(StateHasChanged);
+        }
+
+        _phones = Store.All.ToList();
+        _scanning = false;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private class ByteArrayComparer : IComparer<byte[]>
+    {
+        public int Compare(byte[]? x, byte[]? y)
+        {
+            if (x == null || y == null) return 0;
+            for (int i = 0; i < Math.Min(x.Length, y.Length); i++)
+            {
+                if (x[i] != y[i]) return x[i].CompareTo(y[i]);
+            }
+            return x.Length.CompareTo(y.Length);
+        }
+    }
+}

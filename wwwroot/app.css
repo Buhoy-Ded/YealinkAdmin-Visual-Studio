@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 /* Base */
 html, body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -276,12 +277,79 @@ button {
 
 a {
     color: #0066cc;
+=======
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 20px;
+    background-color: #f5f5f5;
+}
+
+.page {
+    max-width: 1200px;
+    margin: 0 auto;
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+h3 {
+    color: #333;
+    border-bottom: 2px solid #0078d4;
+    padding-bottom: 10px;
+}
+
+button {
+    background: #0078d4;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 4px;
+    cursor: pointer;
+    margin: 5px;
+}
+
+    button:disabled {
+        background: #ccc;
+        cursor: not-allowed;
+    }
+
+    button:hover:not(:disabled) {
+        background: #005a9e;
+    }
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 20px;
+}
+
+th, td {
+    text-align: left;
+    padding: 12px;
+    border-bottom: 1px solid #ddd;
+}
+
+th {
+    background: #0078d4;
+    color: white;
+}
+
+tr:hover {
+    background: #f1f1f1;
+}
+
+a {
+    color: #0078d4;
+    text-decoration: none;
+>>>>>>> 3be700de0735421e3de6a3fa9ed52d98f83113f4
 }
 
     a:hover {
         text-decoration: underline;
     }
 
+<<<<<<< HEAD
 /* Diagnostics panel */
 .diagnostics {
     background-color: #f5f5f5;
@@ -345,3 +413,64 @@ a {
 .alert-warning li {
     margin-bottom: 5px;
 }
+=======
+.alert {
+    padding: 12px;
+    border-radius: 4px;
+    margin: 10px 0;
+}
+
+.alert-warning {
+    background: #fff3cd;
+    border: 1px solid #ffeaa7;
+    color: #856404;
+}
+
+.alert-danger {
+    background: #f8d7da;
+    border: 1px solid #f5c6cb;
+    color: #721c24;
+}
+
+.alert-info {
+    background: #d1ecf1;
+    border: 1px solid #bee5eb;
+    color: #0c5460;
+}
+
+input {
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    width: 200px;
+    margin: 5px 0;
+}
+
+label {
+    display: inline-block;
+    width: 80px;
+    font-weight: bold;
+}
+.toolbar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+    .toolbar input {
+        padding: 8px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        width: 250px;
+    }
+
+table th {
+    cursor: pointer;
+    user-select: none;
+}
+
+    table th:hover {
+        background: #005a9e;
+    }
+>>>>>>> 3be700de0735421e3de6a3fa9ed52d98f83113f4
