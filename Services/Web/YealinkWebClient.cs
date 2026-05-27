@@ -1,4 +1,5 @@
-﻿using System.Security.Cryptography;
+using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -24,11 +25,10 @@ public class YealinkWebClient
             await GetRsaKeysAsync(ip);
             var encryptedPwd = RsaEncrypt(password);
 
-            var rajax = Random.Shared.NextDouble();
-            var url = $"https://{ip}/servlet?m=mod_listener&p=login&q=login&Rajax={rajax}";
+            var url = $"https://{ip}/servlet?m=mod_listener&p=login&q=login&Rajax={CreateNonce()}";
 
-            using var client = _httpFactory.CreateClient("yealink");
-            var content = new FormUrlEncodedContent(new Dictionary<string, string>
+            using var client = _httpFactory.CreateClient("yealink-web");
+            using var content = new FormUrlEncodedContent(new Dictionary<string, string>
             {
                 ["username"] = username,
                 ["pwd"] = encryptedPwd,
@@ -38,7 +38,7 @@ public class YealinkWebClient
             client.DefaultRequestHeaders.Remove("Referer");
             client.DefaultRequestHeaders.Add("Referer", url);
 
-            var response = await client.PostAsync(url, content);
+            using var response = await client.PostAsync(url, content);
             var text = await response.Content.ReadAsStringAsync();
 
             return text.Contains("\"authstatus\":\"done\"");
@@ -64,11 +64,10 @@ public class YealinkWebClient
 
     private async Task GetRsaKeysAsync(string ip)
     {
-        var rand = Random.Shared.NextDouble();
-        var url = $"https://{ip}/servlet?m=mod_listener&p=login&q=loginForm&Random={rand}";
+        var url = $"https://{ip}/servlet?m=mod_listener&p=login&q=loginForm&Random={CreateNonce()}";
 
-        using var client = _httpFactory.CreateClient("yealink");
-        var response = await client.GetAsync(url);
+        using var client = _httpFactory.CreateClient("yealink-web");
+        using var response = await client.GetAsync(url);
         var text = await response.Content.ReadAsStringAsync();
 
         var nMatch = Regex.Match(text, @"g_rsa_n\s*=\s*['""]([0-9a-fA-F]+)['""]");
@@ -86,4 +85,7 @@ public class YealinkWebClient
             Exponent = eBytes
         };
     }
+
+    private static string CreateNonce() =>
+        Random.Shared.NextDouble().ToString("R", CultureInfo.InvariantCulture);
 }

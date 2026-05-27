@@ -1,115 +1,299 @@
-﻿@page "/config/{Ip}"
+@page "/config/{Ip}"
 @inject PhoneStore Store
 @inject NavigationManager Navigation
 @inject SecureCredentialStorage Credentials
 @inject YealinkStatusClient StatusClient
+@inject YealinkConfigManager ConfigManager
 @rendermode RenderMode.InteractiveServer
-
-<h3>Конфигурация телефона</h3>
 
 @if (_phone == null)
 {
-    <p>Телефон не найден. <a href="/">Назад</a></p>
+    <section class="empty-state">
+        <h1>Телефон не найден</h1>
+        <p>Проверьте адрес или вернитесь к списку телефонов.</p>
+        <button class="btn primary" @onclick="GoBack">К списку</button>
+    </section>
 }
 else
 {
-    <div class="phone-header">
-        <p><strong>IP:</strong> @_phone.IpAddress</p>
-        <p><strong>MAC:</strong> @_phone.MacAddress</p>
-        <p><strong>Модель:</strong> @_phone.Model</p>
-        <p><strong>Аккаунт:</strong> @_phone.Account</p>
-    </div>
+    <section class="page-heading">
+        <div>
+            <p class="eyebrow">Телефон</p>
+            <h1>@_phone.IpAddress</h1>
+        </div>
+        <div class="heading-actions">
+            <button class="btn ghost" @onclick="GoBack">Назад</button>
+            <button class="btn" @onclick="OpenWebInterface">Веб-интерфейс</button>
+            @if (!Credentials.IsAdminConfigured)
+            {
+                <button class="btn primary" @onclick="ShowAdminLogin">Войти как админ</button>
+            }
+        </div>
+    </section>
+
+    <section class="device-strip">
+        <div>
+            <span>Модель</span>
+            <strong>@(_phone.Model ?? "Не определена")</strong>
+        </div>
+        <div>
+            <span>MAC</span>
+            <strong>@_phone.MacAddress</strong>
+        </div>
+        <div>
+            <span>Серийник</span>
+            <strong>@DisplayValue(_phone.SerialNumber)</strong>
+        </div>
+        <div>
+            <span>Аккаунт</span>
+            <strong>@_phone.Account</strong>
+        </div>
+        <div>
+            <span>Состояние</span>
+            @if (_phone.IsForbidden)
+            {
+                <strong class="text-warning">Нужен Action URI</strong>
+            }
+            else
+            {
+                <strong>@(_phone.IsOnline ? "Онлайн" : "Из кэша")</strong>
+            }
+        </div>
+    </section>
 
     @if (!Credentials.IsAdminConfigured)
     {
-        <div class="alert alert-warning">
-            <button @onclick="ShowAdminLogin">Войти как администратор</button> для редактирования.
+        <div class="alert alert-info">
+            Для загрузки статуса, сохранения и импорта конфигурации нужен админ-доступ.
         </div>
     }
 
     <div class="tabs">
         <button class="@(_activeTab == "status" ? "active" : "")" @onclick='() => _activeTab = "status"'>Status</button>
         <button class="@(_activeTab == "config" ? "active" : "")" @onclick='() => _activeTab = "config"'>Config</button>
-        <button class="@(_activeTab == "panel" ? "active" : "")" @onclick='() => _activeTab = "panel"'>Panel</button>
     </div>
 
     @if (_activeTab == "status")
     {
-        <div class="tab-content">
-            <h4>Статус телефона</h4>
-
-            <button @onclick="LoadStatusFromWeb" disabled="@_loadingStatus">@(_loadingStatus ? "Загрузка..." : "Обновить статус")</button>
+        <section class="detail-panel">
+            <div class="panel-title-row">
+                <div>
+                    <h2>Состояние телефона</h2>
+                    <p>Основные параметры устройства и регистрации.</p>
+                </div>
+                <button class="btn primary" @onclick="LoadStatusFromWeb" disabled="@(_loadingStatus || !Credentials.IsAdminConfigured)">
+                    @(_loadingStatus ? "Загрузка..." : "Обновить")
+                </button>
+            </div>
 
             @if (_statusError != null)
             {
                 <div class="alert alert-danger">@_statusError</div>
             }
 
-            @if (FilteredStatusFields.Any())
-            {
-                <table class="status-table">
-                    <tbody>
-                        @foreach (var kvp in FilteredStatusFields)
+            <div class="status-layout">
+                @foreach (var section in StatusSections)
+                {
+                    <section class="status-block">
+                        <h3>@section.Title</h3>
+                        @foreach (var row in section.Rows)
                         {
-                            <tr>
-                                <td class="status-label">@kvp.Key</td>
-                                <td class="status-value">@kvp.Value</td>
-                            </tr>
+                            <div class="kv-row">
+                                <span>@row.Label</span>
+                                <strong>@row.Value</strong>
+                            </div>
                         }
-                    </tbody>
-                </table>
-            }
-            else if (!_loadingStatus && _statusError == null)
-            {
-                <p>Нажмите "Обновить статус" для загрузки данных.</p>
-            }
+                    </section>
+                }
+            </div>
 
             @if (!string.IsNullOrEmpty(_rawHtmlPreview))
             {
-                <details>
-                    <summary>Отладка: сырой HTML (первые 2000 символов)</summary>
+                <details class="debug-details">
+                    <summary>Сырой HTML</summary>
                     <pre class="diagnostics">@_rawHtmlPreview</pre>
                 </details>
             }
-        </div>
+        </section>
     }
     else if (_activeTab == "config")
     {
-        <div class="tab-content">
+        <section class="detail-panel">
+            <div class="panel-title-row">
+                <div>
+                    <h2>Конфигурация линии</h2>
+                    <p>Параметры будут использоваться для генерации и загрузки .cfg.</p>
+                </div>
+                <button class="btn primary" @onclick="SaveConfig">Сохранить</button>
+            </div>
+
             @if (_phone.IsForbidden)
             {
                 <div class="alert alert-warning">
-                    <p>⚠️ Редактирование недоступно — Action URI отключён.</p>
-                    <button @onclick="OpenWebInterface">Открыть веб-интерфейс</button>
+                    Action URI отключён. Импорт готового .cfg может быть надёжнее, чем управление через web API.
                 </div>
             }
-            else if (Credentials.IsAdminConfigured)
-            {
-                <h4>Редактирование конфигурации</h4>
-                <div class="form-group">
-                    <label>Account:</label>
-                    <input type="text" @bind="_editAccount" />
-                </div>
-                <button @onclick="SaveConfig">Save</button>
-                <button @onclick="DownloadConfig">Download Config</button>
-                <button @onclick="UploadConfig">Upload Config</button>
-                <button @onclick="Reboot">Reboot</button>
-            }
-            else
-            {
-                <p>Требуется авторизация администратора.</p>
-            }
-        </div>
-    }
-    else if (_activeTab == "panel")
-    {
-        <div class="tab-content">
-            <h4>Расширенная панель</h4>
-            <p>Coming soon...</p>
-        </div>
-    }
 
-    <button @onclick="GoBack">Назад</button>
+            <div class="config-layout">
+                <section class="form-panel">
+                    <h3>Линия</h3>
+                    <div class="form-grid">
+                        <label>
+                            <span>Статус регистрации</span>
+                            <input type="text" value="@_registrationStatus" readonly />
+                        </label>
+                        <label class="switch-row">
+                            <span>Активная линия</span>
+                            <input type="checkbox" @bind="_lineEnabled" />
+                        </label>
+                        <label>
+                            <span>Лейбл</span>
+                            <input type="text" @bind="_lineLabel" />
+                        </label>
+                        <label>
+                            <span>Отображаемое имя</span>
+                            <input type="text" @bind="_displayName" />
+                        </label>
+                        <label>
+                            <span>Имя регистрации</span>
+                            <input type="text" @bind="_registerName" />
+                        </label>
+                        <label>
+                            <span>Имя пользователя</span>
+                            <input type="text" @bind="_userName" />
+                        </label>
+                        <label>
+                            <span>Пароль</span>
+                            <input type="password" @bind="_password" placeholder="••••••••" />
+                        </label>
+                    </div>
+                </section>
+
+                <section class="form-panel">
+                    <h3>SIP-сервер 1</h3>
+                    <div class="form-grid">
+                        <label>
+                            <span>Адрес SIP-сервера</span>
+                            <input type="text" @bind="_sipServer1" />
+                        </label>
+                        <label>
+                            <span>Порт</span>
+                            <input type="number" @bind="_sipPort1" />
+                        </label>
+                        <label>
+                            <span>Transport</span>
+                            <select @bind="_transport1">
+                                <option>UDP</option>
+                                <option>TCP</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span>Таймаут сервера</span>
+                            <input type="number" @bind="_serverTimeout1" />
+                        </label>
+                        <label>
+                            <span>Количество запросов</span>
+                            <input type="number" @bind="_retryCount1" />
+                        </label>
+                    </div>
+                </section>
+
+                <section class="form-panel">
+                    <h3>SIP-сервер 2</h3>
+                    <div class="form-grid">
+                        <label>
+                            <span>Адрес SIP-сервера</span>
+                            <input type="text" @bind="_sipServer2" />
+                        </label>
+                        <label>
+                            <span>Порт</span>
+                            <input type="number" @bind="_sipPort2" />
+                        </label>
+                        <label>
+                            <span>Transport</span>
+                            <select @bind="_transport2">
+                                <option>UDP</option>
+                                <option>TCP</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span>Таймаут сервера</span>
+                            <input type="number" @bind="_serverTimeout2" />
+                        </label>
+                        <label>
+                            <span>Количество запросов</span>
+                            <input type="number" @bind="_retryCount2" />
+                        </label>
+                    </div>
+                </section>
+
+                <section class="form-panel">
+                    <h3>Outbound и NAT</h3>
+                    <div class="form-grid">
+                        <label class="switch-row">
+                            <span>Использовать Outbound-сервер</span>
+                            <input type="checkbox" @bind="_outboundEnabled" />
+                        </label>
+                        <label>
+                            <span>Outbound Proxy Server 1</span>
+                            <input type="text" @bind="_outboundProxy1" />
+                        </label>
+                        <label>
+                            <span>Порт Proxy 1</span>
+                            <input type="number" @bind="_outboundPort1" />
+                        </label>
+                        <label>
+                            <span>Outbound Proxy Server 2</span>
+                            <input type="text" @bind="_outboundProxy2" />
+                        </label>
+                        <label>
+                            <span>Порт Proxy 2</span>
+                            <input type="number" @bind="_outboundPort2" />
+                        </label>
+                        <label>
+                            <span>Интервал Proxy</span>
+                            <input type="number" @bind="_proxyInterval" />
+                        </label>
+                        <label class="switch-row">
+                            <span>NAT</span>
+                            <input type="checkbox" @bind="_natEnabled" />
+                        </label>
+                    </div>
+                </section>
+            </div>
+
+            <section class="cfg-panel">
+                <div>
+                    <h3>Конфигурационный файл .cfg</h3>
+                    <p>Можно импортировать уже подготовленный файл или позже экспортировать собранные настройки.</p>
+                </div>
+
+                <div class="cfg-actions">
+                    <label>
+                        <span>Экспорт</span>
+                        <select @bind="_exportScope">
+                            <option>Все настройки</option>
+                        </select>
+                    </label>
+                    <button class="btn" @onclick="ExportConfig">Экспорт</button>
+                </div>
+
+                <div class="cfg-actions">
+                    <div class="selected-file">@(_selectedCfgFile?.Name ?? "Файл не выбран")</div>
+                    <InputFile OnChange="OnCfgFileSelected" />
+                    <button class="btn primary" @onclick="ImportConfig" disabled="@(_selectedCfgFile == null || _importingConfig || !Credentials.IsAdminConfigured)">
+                        @(_importingConfig ? "Импорт..." : "Импорт")
+                    </button>
+                    <button class="btn ghost" @onclick="CancelImport" disabled="@(_selectedCfgFile == null)">Отмена</button>
+                </div>
+
+                @if (!string.IsNullOrEmpty(_configMessage))
+                {
+                    <div class="alert alert-info">@_configMessage</div>
+                }
+            </section>
+        </section>
+    }
 }
 
 @if (_showAdminLogin)
@@ -117,69 +301,115 @@ else
     <div class="modal">
         <div class="modal-content">
             <h4>Администраторский доступ</h4>
-            <div>
-                <label>Логин:</label>
-                <input type="text" @bind="_adminUsername" />
+            <div class="field-stack">
+                <label>
+                    <span>Логин</span>
+                    <input type="text" @bind="_adminUsername" />
+                </label>
+                <label>
+                    <span>Пароль</span>
+                    <input type="password" @bind="_adminPassword" />
+                </label>
             </div>
-            <div>
-                <label>Пароль:</label>
-                <input type="password" @bind="_adminPassword" />
+            <div class="action-row">
+                <button class="btn primary" @onclick="AdminLogin">Войти</button>
+                <button class="btn ghost" @onclick='() => _showAdminLogin = false'>Отмена</button>
             </div>
-            <button @onclick="AdminLogin">Войти</button>
-            <button @onclick='() => _showAdminLogin = false'>Отмена</button>
         </div>
     </div>
 }
 
 @code {
     [Parameter] public string Ip { get; set; } = string.Empty;
+
     private PhoneInfo? _phone;
     private string _activeTab = "status";
     private bool _showAdminLogin;
     private string _adminUsername = string.Empty;
     private string _adminPassword = string.Empty;
-    private string _editAccount = string.Empty;
 
     private bool _loadingStatus;
     private string? _statusError;
     private string _rawHtmlPreview = string.Empty;
 
-    // Поля, которые скрываем из статуса
-    private static readonly HashSet<string> _hiddenStatusFields = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "Device Certificate",
-        "Internet Port",
-        "WAN Port Type",
-        "WAN IP Address",
-        "Subnet Mask",
-        "Gateway",
-        "Primary DNS",
-        "Secondary DNS",
-        "VLAN ID",
-        "WAN Port Status",
-        "PC Port Status",
-        "IPv4",
-        "IPv6",
-        "Network",
-        "Network Common",
-        "Account Status",
-        "Ext"
-    };
+    private string _registrationStatus = "Не загружен";
+    private bool _lineEnabled = true;
+    private string _lineLabel = string.Empty;
+    private string _displayName = string.Empty;
+    private string _registerName = string.Empty;
+    private string _userName = string.Empty;
+    private string _password = string.Empty;
+    private string _sipServer1 = "10.6.10.10";
+    private int _sipPort1 = 5060;
+    private string _transport1 = "UDP";
+    private int _serverTimeout1 = 3600;
+    private int _retryCount1 = 3;
+    private string _sipServer2 = string.Empty;
+    private int _sipPort2 = 5060;
+    private string _transport2 = "UDP";
+    private int _serverTimeout2 = 3600;
+    private int _retryCount2 = 3;
+    private bool _outboundEnabled;
+    private string _outboundProxy1 = string.Empty;
+    private int _outboundPort1 = 5060;
+    private string _outboundProxy2 = string.Empty;
+    private int _outboundPort2 = 5060;
+    private int _proxyInterval = 3600;
+    private bool _natEnabled;
 
-    private IEnumerable<KeyValuePair<string, string>> FilteredStatusFields
+    private string _exportScope = "Все настройки";
+    private IBrowserFile? _selectedCfgFile;
+    private bool _importingConfig;
+    private string _configMessage = string.Empty;
+
+    private IEnumerable<StatusSection> StatusSections => new[]
     {
-        get
+        new StatusSection("Версия", new[]
         {
-            if (_phone?.StatusFields == null) return Enumerable.Empty<KeyValuePair<string, string>>();
-            return _phone.StatusFields.Where(kvp => !_hiddenStatusFields.Contains(kvp.Key));
-        }
-    }
+            Row("Версия ПО", "Firmware Version", "FirmwareVersion", "Версия ПО"),
+            Row("Сборка", "Build Version", "Build", "Сборка")
+        }),
+        new StatusSection("IPv4", new[]
+        {
+            Row("Режим порта Internet", "WAN Port Type", "Internet Port Type", "Режим порта Internet"),
+            Row("IP-адрес порта Internet", "IPv4 WAN IP Address", "WAN IP Address", "IP Address", "IP-адрес порта Internet"),
+            Row("Маска подсети", "Subnet Mask", "Маска подсети"),
+            Row("Шлюз", "IPv4 Gateway", "Gateway", "Шлюз"),
+            Row("Основной DNS", "IPv4 Primary DNS", "Primary DNS", "Основной DNS", "Осн. DNS-сервер"),
+            Row("Дополнительный DNS", "IPv4 Secondary DNS", "Secondary DNS", "Дополнительный DNS")
+        }),
+        new StatusSection("Общие", new[]
+        {
+            Row("MAC-адрес", "MAC Address", "MACAddress", "MAC-адрес"),
+            Row("ID устройства", "Device ID", "Machine ID", "ID устройства"),
+            Row("VLAN ID", "VLAN ID"),
+            Row("Статус WAN-порта", "WAN Port Status", "Статус WAN-порта"),
+            Row("PC Port статус", "PC Port Status", "PC Port статус"),
+            Row("Тип устройства", "Phone Type", "Device Type", "Тип устройства"),
+            Row("Время работы", "Uptime", "Время работы"),
+            Row("Текущее время", "Current Time", "Текущее время")
+        }),
+        new StatusSection("Регистрация", new[]
+        {
+            Row("Аккаунт 1", "Account 1", "Account")
+        })
+    };
 
     protected override void OnInitialized()
     {
         _phone = Store.GetByIp(Ip);
-        if (_phone != null)
-            _editAccount = _phone.Account;
+        SeedConfigFromPhone();
+    }
+
+    private void SeedConfigFromPhone()
+    {
+        if (_phone == null) return;
+
+        var account = ExtractAccount(_phone.Account);
+        _lineLabel = account;
+        _displayName = account;
+        _registerName = account;
+        _userName = account;
     }
 
     private void ShowAdminLogin() => _showAdminLogin = true;
@@ -200,7 +430,7 @@ else
         var creds = Credentials.GetAdminCredentials();
         if (creds == null)
         {
-            _statusError = "Требуется admin-авторизация";
+            _statusError = "Требуется admin-авторизация.";
             return;
         }
 
@@ -214,16 +444,19 @@ else
             var result = await StatusClient.GetStatusAsync(_phone.IpAddress, creds.Value.username, creds.Value.password);
             _phone.StatusFields = result.Fields;
 
-            if (_phone.Model?.Contains("Action URI disabled") == true || _phone.Model?.Contains("Unknown") == true)
+            var betterModel = ModelResolver.ResolveFromStatus(result.Fields);
+            if (!string.IsNullOrWhiteSpace(betterModel))
             {
-                var betterModel = ModelResolver.ResolveFromStatus(result.Fields);
-                if (betterModel != null)
-                    _phone.Model = betterModel;
+                _phone.Model = betterModel;
             }
 
-            if (_phone.MacAddress == "unknown" && result.Fields.TryGetValue("MAC Address", out var mac))
+            if (_phone.MacAddress == "unknown" && TryValue(out var mac, "MAC Address", "MAC-адрес"))
                 _phone.MacAddress = mac;
 
+            if (string.IsNullOrWhiteSpace(_phone.SerialNumber) && TryValue(out var serial, "Device ID", "Machine ID", "ID устройства"))
+                _phone.SerialNumber = serial;
+
+            ApplyStatusToConfigDefaults();
             Store.Upsert(_phone);
             _statusError = null;
             _rawHtmlPreview = result.RawHtml[..Math.Min(2000, result.RawHtml.Length)];
@@ -237,18 +470,150 @@ else
         await InvokeAsync(StateHasChanged);
     }
 
-    private void SaveConfig()
+    private void ApplyStatusToConfigDefaults()
     {
-        if (_phone != null)
+        if (TryValue(out var account, "Account 1", "Account"))
         {
-            _phone.Account = _editAccount;
-            Store.Upsert(_phone);
+            _registrationStatus = account.Contains("Зарегистрирован", StringComparison.OrdinalIgnoreCase) ||
+                                  account.Contains("Registered", StringComparison.OrdinalIgnoreCase)
+                ? "Зарегистрирован"
+                : account;
+
+            var extension = ExtractAccount(account);
+            if (!string.IsNullOrWhiteSpace(extension))
+            {
+                _lineLabel = extension;
+                _displayName = extension;
+                _registerName = extension;
+                _userName = extension;
+            }
         }
     }
 
-    private void DownloadConfig() { /* TODO */ }
-    private void UploadConfig() { /* TODO */ }
-    private void Reboot() { /* TODO */ }
+    private void SaveConfig()
+    {
+        if (_phone == null) return;
+
+        _phone.Account = _lineLabel;
+        Store.Upsert(_phone);
+        _configMessage = "Параметры сохранены в форме. Генерацию .cfg подключим следующим шагом.";
+    }
+
+    private void ExportConfig()
+    {
+        _configMessage = $"Экспорт \"{_exportScope}\" подготовлен в UI. Скачивание .cfg подключим отдельным обработчиком.";
+    }
+
+    private void OnCfgFileSelected(InputFileChangeEventArgs e)
+    {
+        _selectedCfgFile = e.File;
+        _configMessage = _selectedCfgFile == null
+            ? string.Empty
+            : $"Выбран файл: {_selectedCfgFile.Name}";
+    }
+
+    private async Task ImportConfig()
+    {
+        if (_phone == null || _selectedCfgFile == null) return;
+
+        var creds = Credentials.GetAdminCredentials();
+        if (creds == null)
+        {
+            _configMessage = "Требуется admin-авторизация для импорта.";
+            return;
+        }
+
+        _importingConfig = true;
+        _configMessage = "Импорт конфигурационного файла...";
+
+        var tempPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}_{_selectedCfgFile.Name}");
+        try
+        {
+            await using (var input = _selectedCfgFile.OpenReadStream(maxAllowedSize: 2 * 1024 * 1024))
+            await using (var output = File.Create(tempPath))
+            {
+                await input.CopyToAsync(output);
+            }
+
+            var result = await ConfigManager.UploadConfigAsync(
+                _phone.IpAddress,
+                creds.Value.username,
+                creds.Value.password,
+                tempPath);
+
+            _configMessage = result.Success
+                ? $"Импорт выполнен. Тип: {result.Filetype}, код: {result.ResultCode}"
+                : "Импорт завершился без подтверждения успеха.";
+        }
+        catch (Exception ex)
+        {
+            _configMessage = $"Ошибка импорта: {ex.Message}";
+        }
+        finally
+        {
+            _importingConfig = false;
+            if (File.Exists(tempPath))
+                File.Delete(tempPath);
+        }
+    }
+
+    private void CancelImport()
+    {
+        _selectedCfgFile = null;
+        _configMessage = string.Empty;
+    }
+
+    private StatusRow Row(string label, params string[] keys) => new(label, Value(keys));
+
+    private string Value(params string[] keys)
+    {
+        if (TryValue(out var value, keys))
+            return value;
+
+        if (_phone != null)
+        {
+            if (keys.Any(k => k.Equals("MACAddress", StringComparison.OrdinalIgnoreCase)))
+                return string.IsNullOrWhiteSpace(_phone.MacAddress) ? "-" : _phone.MacAddress;
+
+            if (keys.Any(k => k.Equals("Account", StringComparison.OrdinalIgnoreCase)))
+                return string.IsNullOrWhiteSpace(_phone.Account) ? "-" : _phone.Account;
+        }
+
+        return "-";
+    }
+
+    private bool TryValue(out string value, params string[] keys)
+    {
+        value = string.Empty;
+        if (_phone?.StatusFields == null) return false;
+
+        foreach (var key in keys)
+        {
+            if (_phone.StatusFields.TryGetValue(key, out var found) && !string.IsNullOrWhiteSpace(found))
+            {
+                value = found;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string ExtractAccount(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Equals("none", StringComparison.OrdinalIgnoreCase))
+            return string.Empty;
+
+        var first = value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? value;
+        first = first.Split(':', StringSplitOptions.TrimEntries).FirstOrDefault() ?? first;
+        first = first.Split('@', StringSplitOptions.TrimEntries).FirstOrDefault() ?? first;
+        return first.Trim();
+    }
+
+    private static string DisplayValue(string? value) =>
+        string.IsNullOrWhiteSpace(value) || value.Equals("unknown", StringComparison.OrdinalIgnoreCase)
+            ? "-"
+            : value;
 
     private void OpenWebInterface()
     {
@@ -257,4 +622,7 @@ else
     }
 
     private void GoBack() => Navigation.NavigateTo("/");
+
+    private sealed record StatusSection(string Title, IReadOnlyList<StatusRow> Rows);
+    private sealed record StatusRow(string Label, string Value);
 }

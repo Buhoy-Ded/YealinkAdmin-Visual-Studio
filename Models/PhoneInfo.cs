@@ -4,6 +4,7 @@ public class PhoneInfo
 {
     public string IpAddress { get; set; } = string.Empty;
     public string MacAddress { get; set; } = string.Empty;
+    public string SerialNumber { get; set; } = string.Empty;
     public string Account { get; set; } = string.Empty;
     public string? Model { get; set; }
     public bool IsOnline { get; set; }

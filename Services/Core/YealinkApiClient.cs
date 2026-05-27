@@ -16,6 +16,18 @@ public class YealinkApiClient
 
     public async Task<string?> QueryAsync(string ipAddress, string username, string password, CancellationToken ct = default)
     {
+        var result = await QueryDetailedAsync(ipAddress, username, password, ct);
+        return result.Status switch
+        {
+            YealinkQueryStatus.Ok => result.Content,
+            YealinkQueryStatus.Forbidden => "__FORBIDDEN__",
+            YealinkQueryStatus.Unsupported => null,
+            _ => null
+        };
+    }
+
+    public async Task<YealinkQueryResult> QueryDetailedAsync(string ipAddress, string username, string password, CancellationToken ct = default)
+    {
         try
         {
             var url = $"https://{ipAddress}/servlet?phonecfg=get&accounts=1";
@@ -30,22 +42,39 @@ public class YealinkApiClient
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 _logger.LogWarning("Unauthorized on {Ip}", ipAddress);
-                return null;
+                return new YealinkQueryResult(YealinkQueryStatus.Unauthorized);
             }
 
             if (response.StatusCode == HttpStatusCode.Forbidden)
             {
                 _logger.LogWarning("Forbidden (403) on {Ip} — Action URI disabled", ipAddress);
-                return "__FORBIDDEN__"; // Маркер для 403
+                return new YealinkQueryResult(YealinkQueryStatus.Forbidden);
+            }
+
+            if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.BadRequest or HttpStatusCode.MethodNotAllowed)
+            {
+                _logger.LogDebug("phonecfg endpoint is unsupported on {Ip}: {StatusCode}", ipAddress, response.StatusCode);
+                return new YealinkQueryResult(YealinkQueryStatus.Unsupported);
             }
 
             response.EnsureSuccessStatusCode();
-            return await response.Content.ReadAsStringAsync(ct);
+            return new YealinkQueryResult(YealinkQueryStatus.Ok, await response.Content.ReadAsStringAsync(ct));
         }
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "Failed to query {Ip}", ipAddress);
-            return null;
+            return new YealinkQueryResult(YealinkQueryStatus.NoResponse);
         }
     }
 }
+
+public enum YealinkQueryStatus
+{
+    Ok,
+    Forbidden,
+    Unauthorized,
+    Unsupported,
+    NoResponse
+}
+
+public sealed record YealinkQueryResult(YealinkQueryStatus Status, string? Content = null);

@@ -11,11 +11,12 @@ public static class YealinkParser
         {
             return new PhoneInfo
             {
-                IpAddress = ipAddress,
-                MacAddress = "unknown",
-                Account = "Ошибка 403",
-                Model = "Yealink (error 403)",
-                IsOnline = true,
+            IpAddress = ipAddress,
+            MacAddress = "unknown",
+            SerialNumber = string.Empty,
+            Account = "Ошибка 403",
+            Model = "Yealink (error 403)",
+            IsOnline = true,
                 IsForbidden = true,
                 LastSeen = DateTime.UtcNow
             };
@@ -23,6 +24,9 @@ public static class YealinkParser
 
         var firmware = GetValue(response, "FirmwareVersion");
         if (firmware == null) return null;
+        var build = GetValue(response, "BuildVersion") ??
+                    GetValue(response, "Build") ??
+                    GetValue(response, "Build Version");
 
         var accounts = new List<string>();
         for (int i = 0; i < 6; i++)
@@ -45,8 +49,13 @@ public static class YealinkParser
         {
             IpAddress = ipAddress,
             MacAddress = GetValue(response, "MACAddress") ?? "unknown",
+            SerialNumber = GetValue(response, "DeviceID") ??
+                           GetValue(response, "DeviceId") ??
+                           GetValue(response, "MachineID") ??
+                           GetValue(response, "SN") ??
+                           string.Empty,
             Account = account,
-            Model = ModelResolver.Resolve(firmware),
+            Model = ModelResolver.Resolve(firmware, build),
             IsOnline = true,
             LastSeen = DateTime.UtcNow
         };

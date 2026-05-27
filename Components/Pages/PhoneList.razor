@@ -1,4 +1,4 @@
-﻿@page "/"
+@page "/"
 @using System.Net
 @inject YealinkScanner Scanner
 @inject PhoneStore Store
@@ -9,140 +9,176 @@
 @inject YealinkStatusClient StatusClient
 @rendermode RenderMode.InteractiveServer
 
-<h3>Телефоны Yealink</h3>
+<section class="page-heading">
+    <div>
+        <p class="eyebrow">Инвентарь</p>
+        <h1>Телефоны Yealink</h1>
+    </div>
+    <div class="heading-actions">
+        @if (!Credentials.IsAdminConfigured)
+        {
+            <button class="btn primary" @onclick="ShowAdminLogin">Войти в админ-режим</button>
+        }
+        else
+        {
+            <button class="btn secondary" @onclick="AdminLogout">Выйти из админ-режима</button>
+        }
+    </div>
+</section>
 
-@if (!Credentials.IsUserConfigured)
+<section class="summary-grid">
+    <div class="metric">
+        <span>Всего</span>
+        <strong>@_phones.Count</strong>
+    </div>
+    <div class="metric">
+        <span>Онлайн</span>
+        <strong>@_phones.Count(p => p.IsOnline)</strong>
+    </div>
+    <div class="metric warning">
+        <span>Action URI</span>
+        <strong>@_phones.Count(p => p.IsForbidden)</strong>
+    </div>
+    <div class="metric">
+        <span>Выбрано</span>
+        <strong>@_selectedPhones.Count</strong>
+    </div>
+</section>
+
+<section class="command-bar">
+    <div class="command-group">
+        <button class="btn primary" @onclick="StartScanNew" disabled="@(_scanning || !Credentials.IsAdminConfigured)">
+            @(_scanning ? "Сканирование..." : "Сканировать новые")
+        </button>
+        <button class="btn" @onclick="StartScanAll" disabled="@(_scanning || !Credentials.IsAdminConfigured)">
+            Обновить список
+        </button>
+        <button class="btn danger" @onclick="DeleteSelected" disabled="@(!_selectedPhones.Any() || _scanning)">
+            Удалить выбранные
+        </button>
+    </div>
+    <div class="search-box">
+        <input type="search" placeholder="Поиск по IP, MAC, серийнику, модели или аккаунту" @bind="_searchText" @bind:event="oninput" />
+    </div>
+</section>
+
+@if (!Credentials.IsAdminConfigured)
 {
-    <div class="alert alert-warning">
-        <a href="/login">Введите логин и пароль</a> для работы с приложением.
+    <div class="alert alert-info">
+        Сейчас открыт режим просмотра: список, кэш и поиск доступны без пароля. Сканирование, проверка IP и управление телефонами требуют админ-креды телефонов.
     </div>
 }
-else if (!Credentials.IsAdminConfigured)
+
+@if (_scanning)
 {
-    <div class="toolbar">
-        <button @onclick="ShowAdminLogin">Войти как администратор</button>
-        <input type="text" placeholder="Поиск..." @bind="_searchText" @bind:event="oninput" />
-    </div>
-    <p>Для сканирования и управления телефонами требуется авторизация администратора.</p>
+    <section class="diagnostics">
+        <div class="diagnostics-row">
+            <span>Найдено: @_foundCount</span>
+            <span>Старт: @_scanStart.ToLocalTime().ToString("HH:mm:ss")</span>
+        </div>
+    </section>
 }
-else
+
+@if (!string.IsNullOrEmpty(_lastScanLog))
 {
-    <div class="toolbar">
-        <button @onclick="StartScanNew" disabled="@_scanning">
-            @(_scanning ? "Сканирование..." : "Scan Now")
-        </button>
-        <button @onclick="StartScanAll" disabled="@_scanning">
-            @(_scanning ? "Сканирование..." : "Update")
-        </button>
-        <button @onclick="NavigateToNew" disabled="@_scanning">New</button>
-        <button @onclick="DeleteSelected" disabled="@(!_selectedPhones.Any())">Delete</button>
-        <button @onclick="AdminLogout">Выйти из админ-режима</button>
-        <input type="text" placeholder="Поиск..." @bind="_searchText" @bind:event="oninput" />
-    </div>
+    <div class="alert alert-info">@_lastScanLog</div>
+}
 
-    @if (_scanning)
-    {
-        <div class="diagnostics">
-            <div class="diagnostics-row">
-                <span>Проверено: @_statsChecked</span>
-                <span>Ответили: @_statsResponded</span>
-                <span>401 Unauthorized: @_statsUnauthorized</span>
-                <span>403 Forbidden: @_statsForbidden</span>
-                <span>Timeout/Error: @_statsError</span>
-                <span>Найдено телефонов: @_foundCount</span>
-            </div>
-        </div>
-    }
+<section class="manual-check">
+    <input type="text" placeholder="IP для проверки" @bind="_manualIp" />
+    <button class="btn" @onclick="CheckManualIp" disabled="@(_checkingManual || !Credentials.IsAdminConfigured)">Проверить</button>
+</section>
 
-    @if (!string.IsNullOrEmpty(_lastScanLog))
-    {
-        <div class="alert alert-info">
-            @_lastScanLog
-        </div>
-    }
-
-    <div class="toolbar" style="margin-top: 10px;">
-        <input type="text" placeholder="IP для проверки..." @bind="_manualIp" />
-        <button @onclick="CheckManualIp" disabled="@_checkingManual">Проверить IP</button>
-    </div>
-
-    @if (!string.IsNullOrEmpty(_manualResult))
-    {
-        <pre class="diagnostics">@_manualResult</pre>
-    }
+@if (!string.IsNullOrEmpty(_manualResult))
+{
+    <pre class="diagnostics">@_manualResult</pre>
 }
 
 @if (FilteredPhones.Any())
 {
-    <table>
-        <thead>
-            <tr>
-                <th><input type="checkbox" @onclick="ToggleSelectAll" /></th>
-                <th @onclick='() => SortBy(nameof(PhoneInfo.IpAddress))'>IP @SortIcon(nameof(PhoneInfo.IpAddress))</th>
-                <th @onclick='() => SortBy(nameof(PhoneInfo.Model))'>Модель @SortIcon(nameof(PhoneInfo.Model))</th>
-                <th @onclick='() => SortBy(nameof(PhoneInfo.Account))'>Аккаунт @SortIcon(nameof(PhoneInfo.Account))</th>
-                <th @onclick='() => SortBy(nameof(PhoneInfo.IsOnline))'>Статус @SortIcon(nameof(PhoneInfo.IsOnline))</th>
-                <th @onclick='() => SortBy(nameof(PhoneInfo.LastSeen))'>Последняя проверка @SortIcon(nameof(PhoneInfo.LastSeen))</th>
-            </tr>
-        </thead>
-        <tbody>
-            @foreach (var phone in FilteredPhones)
-            {
-                <tr class="@(phone.IsForbidden ? "forbidden-row" : "")">
-                    <td><input type="checkbox" checked="@_selectedPhones.Contains(phone.IpAddress)" @onclick="() => ToggleSelect(phone.IpAddress)" /></td>
-                    <td><a href="/config/@phone.IpAddress">@phone.IpAddress</a></td>
-                    <td>@phone.Model</td>
-                    <td>@phone.Account</td>
-                    <td>
-                        @if (phone.IsForbidden)
-                        {
-                            <span>⚠️ 403</span>
-                        }
-                        else
-                        {
-                            <span>@(phone.IsOnline ? "Онлайн" : "Из кэша")</span>
-                        }
-                    </td>
-                    <td>@phone.LastSeen.ToLocalTime().ToString("HH:mm:ss")</td>
+    <section class="table-panel">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th class="select-cell"><input type="checkbox" @onclick="ToggleSelectAll" /></th>
+                    <th @onclick='() => SortBy(nameof(PhoneInfo.IpAddress))'>IP @SortIcon(nameof(PhoneInfo.IpAddress))</th>
+                    <th @onclick='() => SortBy(nameof(PhoneInfo.Model))'>Модель @SortIcon(nameof(PhoneInfo.Model))</th>
+                    <th @onclick='() => SortBy(nameof(PhoneInfo.MacAddress))'>MAC @SortIcon(nameof(PhoneInfo.MacAddress))</th>
+                    <th @onclick='() => SortBy(nameof(PhoneInfo.SerialNumber))'>Серийник @SortIcon(nameof(PhoneInfo.SerialNumber))</th>
+                    <th @onclick='() => SortBy(nameof(PhoneInfo.Account))'>Аккаунт @SortIcon(nameof(PhoneInfo.Account))</th>
+                    <th @onclick='() => SortBy(nameof(PhoneInfo.IsOnline))'>Статус @SortIcon(nameof(PhoneInfo.IsOnline))</th>
+                    <th @onclick='() => SortBy(nameof(PhoneInfo.LastSeen))'>Последняя проверка @SortIcon(nameof(PhoneInfo.LastSeen))</th>
                 </tr>
-            }
-        </tbody>
-    </table>
-    <p>Всего: @FilteredPhones.Count() из @Store.All.Count()</p>
+            </thead>
+            <tbody>
+                @foreach (var phone in FilteredPhones)
+                {
+                    <tr class="@(phone.IsForbidden ? "forbidden-row" : "")">
+                        <td class="select-cell">
+                            <input type="checkbox" checked="@_selectedPhones.Contains(phone.IpAddress)" @onclick="() => ToggleSelect(phone.IpAddress)" />
+                        </td>
+                        <td><a class="strong-link" href="/config/@phone.IpAddress">@phone.IpAddress</a></td>
+                        <td>@(phone.Model ?? "Не определена")</td>
+                        <td>@DisplayValue(phone.MacAddress)</td>
+                        <td>@DisplayValue(phone.SerialNumber)</td>
+                        <td>@phone.Account</td>
+                        <td>
+                            @if (phone.IsForbidden)
+                            {
+                                <span class="status-chip warning">Нужен Action URI</span>
+                            }
+                            else if (phone.IsOnline)
+                            {
+                                <span class="status-chip good">Онлайн</span>
+                            }
+                            else
+                            {
+                                <span class="status-chip muted">Из кэша</span>
+                            }
+                        </td>
+                        <td>@phone.LastSeen.ToLocalTime().ToString("dd.MM HH:mm:ss")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </section>
+    <p class="table-note">Показано: @FilteredPhones.Count() из @_phones.Count</p>
 }
 else if (!_scanning)
 {
-    <p>Нет данных. Нажмите "Scan Now" для сканирования сети.</p>
+    <section class="empty-state">
+        <h2>Телефоны пока не найдены</h2>
+        <p>Войдите в админ-режим и запустите сканирование.</p>
+    </section>
 }
 
 @if (_showAdminLogin)
 {
     <div class="modal">
         <div class="modal-content">
-            <h4>Администраторский доступ</h4>
-            <div>
-                <label>Логин:</label>
-                <input type="text" @bind="_adminUsername" />
+            <h4>Админ-режим телефонов</h4>
+            <div class="field-stack">
+                <label>
+                    <span>Логин администратора телефона</span>
+                    <input type="text" @bind="_adminUsername" />
+                </label>
+                <label>
+                    <span>Пароль администратора телефона</span>
+                    <input type="password" @bind="_adminPassword" />
+                </label>
             </div>
-            <div>
-                <label>Пароль:</label>
-                <input type="password" @bind="_adminPassword" />
+            <div class="action-row">
+                <button class="btn primary" @onclick="AdminLogin">Включить</button>
+                <button class="btn ghost" @onclick='() => _showAdminLogin = false'>Отмена</button>
             </div>
-            <button @onclick="AdminLogin">Войти</button>
-            <button @onclick='() => _showAdminLogin = false'>Отмена</button>
         </div>
     </div>
 }
 
 @code {
-    private List<PhoneInfo> _phones = new ();
+    private List<PhoneInfo> _phones = new();
     private bool _scanning;
     private int _foundCount;
-    private int _statsChecked;
-    private int _statsResponded;
-    private int _statsUnauthorized;
-    private int _statsForbidden;
-    private int _statsError;
     private DateTime _scanStart;
     private string _searchText = string.Empty;
     private string _sortColumn = nameof(PhoneInfo.IpAddress);
@@ -168,6 +204,8 @@ else if (!_scanning)
                 var search = _searchText.Trim();
                 query = query.Where(p =>
                     p.IpAddress.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                    p.MacAddress.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                    p.SerialNumber.Contains(search, StringComparison.OrdinalIgnoreCase) ||
                     (p.Model?.Contains(search, StringComparison.OrdinalIgnoreCase) ?? false) ||
                     p.Account.Contains(search, StringComparison.OrdinalIgnoreCase));
             }
@@ -180,6 +218,12 @@ else if (!_scanning)
                 nameof(PhoneInfo.Model) => _sortAscending
                     ? query.OrderBy(p => p.Model)
                     : query.OrderByDescending(p => p.Model),
+                nameof(PhoneInfo.MacAddress) => _sortAscending
+                    ? query.OrderBy(p => p.MacAddress)
+                    : query.OrderByDescending(p => p.MacAddress),
+                nameof(PhoneInfo.SerialNumber) => _sortAscending
+                    ? query.OrderBy(p => p.SerialNumber)
+                    : query.OrderByDescending(p => p.SerialNumber),
                 nameof(PhoneInfo.Account) => _sortAscending
                     ? query.OrderBy(p => p.Account)
                     : query.OrderByDescending(p => p.Account),
@@ -213,37 +257,37 @@ else if (!_scanning)
     }
 
     private string SortIcon(string column) => _sortColumn == column
-        ? (_sortAscending ? "▲" : "▼")
+        ? (_sortAscending ? "↑" : "↓")
         : "";
+
+    private static string DisplayValue(string? value) =>
+        string.IsNullOrWhiteSpace(value) || value.Equals("unknown", StringComparison.OrdinalIgnoreCase)
+            ? "-"
+            : value;
 
     private void ToggleSelect(string ip)
     {
-        if (_selectedPhones.Contains(ip))
+        if (!_selectedPhones.Add(ip))
             _selectedPhones.Remove(ip);
-        else
-            _selectedPhones.Add(ip);
     }
 
     private void ToggleSelectAll()
     {
-        if (_selectedPhones.Count == FilteredPhones.Count())
+        var filtered = FilteredPhones.ToList();
+        if (_selectedPhones.Count == filtered.Count)
             _selectedPhones.Clear();
         else
-            _selectedPhones = new HashSet<string>(FilteredPhones.Select(p => p.IpAddress));
+            _selectedPhones = new HashSet<string>(filtered.Select(p => p.IpAddress));
     }
 
-    private void DeleteSelected()
+    private async Task DeleteSelected()
     {
         foreach (var ip in _selectedPhones)
             Store.Remove(ip);
 
         _selectedPhones.Clear();
         _phones = Store.All.ToList();
-    }
-
-    private void NavigateToNew()
-    {
-        Navigation.NavigateTo("/config/new");
+        await Store.SaveAsync();
     }
 
     private void ShowAdminLogin() => _showAdminLogin = true;
@@ -281,11 +325,6 @@ else if (!_scanning)
     {
         _scanning = true;
         _foundCount = 0;
-        _statsChecked = 0;
-        _statsResponded = 0;
-        _statsUnauthorized = 0;
-        _statsForbidden = 0;
-        _statsError = 0;
         _lastScanLog = string.Empty;
         _scanStart = DateTime.UtcNow;
         await InvokeAsync(StateHasChanged);
@@ -295,7 +334,7 @@ else if (!_scanning)
 
         if (creds == null)
         {
-            _lastScanLog = "Admin credentials not available";
+            _lastScanLog = "Требуется админ-режим.";
             _scanning = false;
             await InvokeAsync(StateHasChanged);
             return;
@@ -326,14 +365,14 @@ else if (!_scanning)
     {
         if (string.IsNullOrWhiteSpace(_manualIp) || !IPAddress.TryParse(_manualIp, out _))
         {
-            _manualResult = "Введите корректный IP";
+            _manualResult = "Введите корректный IP.";
             return;
         }
 
         var creds = Credentials.GetAdminCredentials();
         if (creds == null)
         {
-            _manualResult = "Требуется admin-авторизация";
+            _manualResult = "Требуется админ-режим.";
             return;
         }
 
@@ -343,20 +382,33 @@ else if (!_scanning)
 
         try
         {
-            // Пробуем старый endpoint
             var response = await ApiClient.QueryAsync(_manualIp, creds.Value.username, creds.Value.password);
             if (response == null)
             {
-                _manualResult = $"Нет ответа от {_manualIp}\r\n- Телефон выключен/недоступен\r\n- Неверный логин/пароль\r\n- Брандмауэр блокирует HTTPS";
-            }
-            else if (response == "__FORBIDDEN__")
-            {
-                _manualResult = $"403 Forbidden — Action URI отключён\r\nПробуем RSA-логин + Status Page...";
+                _manualResult = $"phonecfg не дал данных от {_manualIp}. Пробую web status API...\r\n";
 
                 try
                 {
                     var statusResult = await StatusClient.GetStatusAsync(_manualIp, creds.Value.username, creds.Value.password);
-                    _manualResult = $"RSA-логин OK!\r\n\rНайдено полей: {statusResult.Fields.Count}\r\n";
+                    _manualResult += $"Status API ответил.\r\nПолей статуса: {statusResult.Fields.Count}\r\n";
+                    foreach (var kvp in statusResult.Fields.Take(14))
+                    {
+                        _manualResult += $"{kvp.Key}: {kvp.Value}\r\n";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _manualResult += $"Status API тоже не ответил: {ex.Message}";
+                }
+            }
+            else if (response == "__FORBIDDEN__")
+            {
+                _manualResult = "403 Forbidden. Пробую RSA-логин и страницу статуса...";
+
+                try
+                {
+                    var statusResult = await StatusClient.GetStatusAsync(_manualIp, creds.Value.username, creds.Value.password);
+                    _manualResult = $"RSA-логин выполнен.\r\nПолей статуса: {statusResult.Fields.Count}\r\n";
                     foreach (var kvp in statusResult.Fields.Take(10))
                     {
                         _manualResult += $"{kvp.Key}: {kvp.Value}\r\n";
@@ -364,14 +416,14 @@ else if (!_scanning)
                 }
                 catch (Exception ex)
                 {
-                    _manualResult += $"\r\n\rRSA-логин не удался: {ex.Message}";
+                    _manualResult += $"\r\nRSA-логин не удался: {ex.Message}";
                 }
             }
             else
             {
                 var firmware = YealinkParser.GetValue(response, "FirmwareVersion");
                 var mac = YealinkParser.GetValue(response, "MACAddress");
-                _manualResult = $"Ответ получен!\r\nFirmware: {firmware ?? "не найдено"}\r\nMAC: {mac ?? "не найдено"}\r\n\r\nПервые 500 символов:\r\n{response[..Math.Min(500, response.Length)]}";
+                _manualResult = $"Ответ получен.\r\nFirmware: {firmware ?? "не найдено"}\r\nMAC: {mac ?? "не найдено"}";
             }
         }
         catch (Exception ex)

@@ -1,9 +1,16 @@
-﻿namespace YealinkAdmin.Services;
+namespace YealinkAdmin.Services;
 
 public static class ModelResolver
 {
-    // Ключ — первое число firmware version (до точки)
-    private static readonly Dictionary<string, string> FirmwareToModel = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly Dictionary<string, string> BuildCodeToModel = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["107"] = "SIP-T43U",
+        ["108"] = "SIP-T46U",
+        ["97"] = "SIP-T57W",
+        ["127"] = "SIP-T30P"
+    };
+
+    private static readonly Dictionary<string, string> FirmwareCodeToModel = new(StringComparer.OrdinalIgnoreCase)
     {
         ["124"] = "SIP-T33P/T33G/T31P/T31G/T31/T30P/T30",
         ["130"] = "SIP-T48S",
@@ -25,25 +32,65 @@ public static class ModelResolver
         ["146"] = "SIP-W70B"
     };
 
-    public static string? Resolve(string firmwareVersion)
+    public static string? Resolve(string? firmwareVersion, string? buildVersion = null)
     {
-        if (string.IsNullOrWhiteSpace(firmwareVersion)) return null;
-        var code = firmwareVersion.Split('.')[0];
-        return FirmwareToModel.TryGetValue(code, out var model) ? model : $"Unknown ({code})";
+        var buildModel = ResolveFromBuild(buildVersion);
+        if (buildModel != null)
+            return buildModel;
+
+        return ResolveFromFirmware(firmwareVersion);
     }
 
-    // Для 403-телефонов — определяем модель по status page если доступен
     public static string? ResolveFromStatus(Dictionary<string, string> status)
     {
-        if (status.TryGetValue("Product Name", out var product))
+        if (TryGetAny(status, out var product, "Product Name", "Product", "ProductName"))
             return product;
 
-        if (status.TryGetValue("Model", out var model))
+        if (TryGetAny(status, out var model, "Model", "Модель"))
             return model;
 
-        if (status.TryGetValue("Firmware Version", out var fw))
-            return Resolve(fw);
+        TryGetAny(status, out var build, "Build Version", "BuildVersion", "Build", "Сборка");
+        TryGetAny(status, out var firmware, "Firmware Version", "FirmwareVersion", "Firmware", "Версия ПО");
 
-        return null;
+        return Resolve(firmware, build);
+    }
+
+    private static string? ResolveFromBuild(string? buildVersion)
+    {
+        var code = GetFirstVersionNumber(buildVersion);
+        if (code == null) return null;
+
+        return BuildCodeToModel.TryGetValue(code, out var model) ? model : $"Unknown build ({code})";
+    }
+
+    private static string? ResolveFromFirmware(string? firmwareVersion)
+    {
+        var code = GetFirstVersionNumber(firmwareVersion);
+        if (code == null) return null;
+
+        return FirmwareCodeToModel.TryGetValue(code, out var model) ? model : $"Unknown firmware ({code})";
+    }
+
+    private static string? GetFirstVersionNumber(string? version)
+    {
+        if (string.IsNullOrWhiteSpace(version)) return null;
+
+        var code = version.Trim().Split('.', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        return string.IsNullOrWhiteSpace(code) ? null : code.Trim();
+    }
+
+    private static bool TryGetAny(Dictionary<string, string> values, out string value, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (values.TryGetValue(key, out var found) && !string.IsNullOrWhiteSpace(found))
+            {
+                value = found;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
     }
 }

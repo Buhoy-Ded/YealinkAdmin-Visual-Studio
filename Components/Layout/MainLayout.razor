@@ -1,29 +1,29 @@
 @inherits LayoutComponentBase
 
-<div class="page">
-    <div class="sidebar">
-        <div class="top-row">
-            <span class="title">Admin Panel</span>
+<div class="app-shell">
+    <aside class="app-sidebar">
+        <div class="brand">
+            <div class="brand-mark">YA</div>
+            <div>
+                <div class="brand-title">Yealink Admin</div>
+                <div class="brand-subtitle">Local console</div>
+            </div>
         </div>
-        <nav>
-            <NavLink href="/" Match="NavLinkMatch.All">
-                <span>Menu</span>
-            </NavLink>
-            <NavLink href="/status">
-                <span>Status</span>
-            </NavLink>
-            <NavLink href="/config">
-                <span>Config</span>
-            </NavLink>
-            <NavLink href="/panel">
-                <span>Panel</span>
-            </NavLink>
+
+        <nav class="nav-menu">
+            <NavLink href="/" Match="NavLinkMatch.All">Телефоны</NavLink>
+            <NavLink href="/admin-login">Админ-режим</NavLink>
         </nav>
-    </div>
-    <main>
-        <div class="top-bar">
-            <button class="btn-exit">Exit</button>
-        </div>
+    </aside>
+
+    <main class="app-main">
+        <header class="app-header">
+            <div>
+                <div class="header-kicker">Управление IP-телефонами</div>
+                <div class="header-title">Yealink</div>
+            </div>
+        </header>
+
         <article class="content">
             @Body
         </article>

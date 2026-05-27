@@ -9,7 +9,6 @@ builder.Services.AddControllers();
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
-builder.Services.AddDataProtection();
 builder.Services.AddSingleton<SecureCredentialStorage>();
 builder.Services.AddSingleton<PhoneStore>();
 builder.Services.AddSingleton<YealinkApiClient>();
@@ -21,6 +20,18 @@ builder.Services.AddSingleton<YealinkStatusClient>();
 builder.Services.AddHttpClient("yealink", client =>
 {
     client.Timeout = TimeSpan.FromSeconds(10);
+})
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+{
+    ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
+    AllowAutoRedirect = true,
+    UseCookies = true,
+    CookieContainer = new System.Net.CookieContainer()
+});
+
+builder.Services.AddHttpClient("yealink-web", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
 })
 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
 {
