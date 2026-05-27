@@ -16,6 +16,7 @@ public static class YealinkParser
                 Account = "Ошибка 403",
                 Model = "Yealink (error 403)",
                 IsOnline = true,
+                IsForbidden = true,
                 LastSeen = DateTime.UtcNow
             };
         }
