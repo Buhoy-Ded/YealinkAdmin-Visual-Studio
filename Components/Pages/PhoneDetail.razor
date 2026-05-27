@@ -124,7 +124,12 @@ else
                     <h2>Конфигурация линии</h2>
                     <p>Параметры будут использоваться для генерации и загрузки .cfg.</p>
                 </div>
-                <button class="btn primary" @onclick="SaveConfig">Сохранить</button>
+                <div class="action-row">
+                    <button class="btn" @onclick="LoadAccountConfigFromWeb" disabled="@(_loadingAccountConfig || !Credentials.IsAdminConfigured)">
+                        @(_loadingAccountConfig ? "Загрузка..." : "Загрузить из телефона")
+                    </button>
+                    <button class="btn primary" @onclick="SaveConfig">Сохранить</button>
+                </div>
             </div>
 
             @if (_phone.IsForbidden)
@@ -360,6 +365,7 @@ else
     private string _exportScope = "Все настройки";
     private IBrowserFile? _selectedCfgFile;
     private bool _importingConfig;
+    private bool _loadingAccountConfig;
     private string _configMessage = string.Empty;
 
     private IEnumerable<StatusSection> StatusSections => new[]
@@ -463,11 +469,23 @@ else
         }
         catch (Exception ex)
         {
-            _statusError = $"Ошибка загрузки статуса: {ex.Message}";
+            _statusError = $"Ошибка загрузки статуса: {GetUsefulErrorMessage(ex)}";
         }
 
         _loadingStatus = false;
         await InvokeAsync(StateHasChanged);
+    }
+
+    private static string GetUsefulErrorMessage(Exception ex)
+    {
+        var messages = new List<string>();
+        for (var current = ex; current != null; current = current.InnerException)
+        {
+            if (!string.IsNullOrWhiteSpace(current.Message) && !messages.Contains(current.Message))
+                messages.Add(current.Message);
+        }
+
+        return string.Join(" / ", messages);
     }
 
     private void ApplyStatusToConfigDefaults()
@@ -488,6 +506,67 @@ else
                 _userName = extension;
             }
         }
+    }
+
+    private async Task LoadAccountConfigFromWeb()
+    {
+        if (_phone == null) return;
+
+        var creds = Credentials.GetAdminCredentials();
+        if (creds == null)
+        {
+            _configMessage = "Требуется admin-авторизация для загрузки конфигурации.";
+            return;
+        }
+
+        _loadingAccountConfig = true;
+        _configMessage = "Загрузка параметров аккаунта...";
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var result = await StatusClient.GetAccountConfigAsync(_phone.IpAddress, creds.Value.username, creds.Value.password);
+            ApplyAccountConfig(result.Fields);
+            _configMessage = "Параметры аккаунта загружены из телефона. Пароль не подставляю в форму из соображений безопасности.";
+        }
+        catch (Exception ex)
+        {
+            _configMessage = $"Ошибка загрузки конфигурации аккаунта: {ex.Message}";
+        }
+        finally
+        {
+            _loadingAccountConfig = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void ApplyAccountConfig(Dictionary<string, string> fields)
+    {
+        _lineEnabled = BoolValue(fields, true, "AccountEnable.1", "data.formData.AccountEnable.1");
+        _lineLabel = ValueFrom(fields, _lineLabel, "AccountLabel.1", "data.formData.AccountLabel.1", "data.1.label");
+        _displayName = ValueFrom(fields, _displayName, "AccountDisplayName.1", "data.formData.AccountDisplayName.1", "data.1.displayName");
+        _registerName = ValueFrom(fields, _registerName, "AccountRegisterName.1", "data.formData.AccountRegisterName.1", "data.1.registerName");
+        _userName = ValueFrom(fields, _userName, "AccountUserName.1", "data.formData.AccountUserName.1", "data.1.userName");
+
+        _sipServer1 = ValueFrom(fields, _sipServer1, "AccountServerAddr1.1", "data.formData.AccountServerAddr1.1", "AccountServerAddr.1.1", "data.formData.AccountServerAddr.1.1", "data.1.sipServer");
+        _sipPort1 = IntValue(fields, _sipPort1, "AccountServerPort1.1", "data.formData.AccountServerPort1.1", "AccountServerPort.1.1", "data.formData.AccountServerPort.1.1");
+        _transport1 = TransportValue(fields, _transport1, "AccountServerTransport1.1", "data.formData.AccountServerTransport1.1", "AccountServerTransport.1.1", "data.formData.AccountServerTransport.1.1");
+        _serverTimeout1 = IntValue(fields, _serverTimeout1, "AccountServerExpires1.1", "data.formData.AccountServerExpires1.1", "AccountServerExpires.1.1", "data.formData.AccountServerExpires.1.1");
+        _retryCount1 = IntValue(fields, _retryCount1, "AccountServerRetryCounts1.1", "data.formData.AccountServerRetryCounts1.1", "AccountServerRetryCounts.1.1", "data.formData.AccountServerRetryCounts.1.1");
+
+        _sipServer2 = ValueFrom(fields, _sipServer2, "AccountServerAddr2.1", "data.formData.AccountServerAddr2.1", "AccountServerAddr.1.2", "data.formData.AccountServerAddr.1.2");
+        _sipPort2 = IntValue(fields, _sipPort2, "AccountServerPort2.1", "data.formData.AccountServerPort2.1", "AccountServerPort.1.2", "data.formData.AccountServerPort.1.2");
+        _transport2 = TransportValue(fields, _transport2, "AccountServerTransport2.1", "data.formData.AccountServerTransport2.1", "AccountServerTransport.1.2", "data.formData.AccountServerTransport.1.2");
+        _serverTimeout2 = IntValue(fields, _serverTimeout2, "AccountServerExpires2.1", "data.formData.AccountServerExpires2.1", "AccountServerExpires.1.2", "data.formData.AccountServerExpires.1.2");
+        _retryCount2 = IntValue(fields, _retryCount2, "AccountServerRetryCounts2.1", "data.formData.AccountServerRetryCounts2.1", "AccountServerRetryCounts.1.2", "data.formData.AccountServerRetryCounts.1.2");
+
+        _outboundEnabled = BoolValue(fields, _outboundEnabled, "AccountOutboundSwitch.1", "data.formData.AccountOutboundSwitch.1");
+        _outboundProxy1 = ValueFrom(fields, _outboundProxy1, "AccountOutboundProxy1.1", "data.formData.AccountOutboundProxy1.1", "AccountOutboundProxy.1.1", "data.formData.AccountOutboundProxy.1.1");
+        _outboundPort1 = IntValue(fields, _outboundPort1, "AccountOutboundPort1.1", "data.formData.AccountOutboundPort1.1", "AccountOutboundPort.1.1", "data.formData.AccountOutboundPort.1.1");
+        _outboundProxy2 = ValueFrom(fields, _outboundProxy2, "AccountOutboundProxy2.1", "data.formData.AccountOutboundProxy2.1", "AccountOutboundProxy.1.2", "data.formData.AccountOutboundProxy.1.2");
+        _outboundPort2 = IntValue(fields, _outboundPort2, "AccountOutboundPort2.1", "data.formData.AccountOutboundPort2.1", "AccountOutboundPort.1.2", "data.formData.AccountOutboundPort.1.2");
+        _proxyInterval = IntValue(fields, _proxyInterval, "AccountProxyFallbackInterval.1", "data.formData.AccountProxyFallbackInterval.1");
+        _natEnabled = BoolValue(fields, _natEnabled, "AccountStunSwitch.1", "data.formData.AccountStunSwitch.1");
     }
 
     private void SaveConfig()
@@ -599,6 +678,49 @@ else
         return false;
     }
 
+    private static string ValueFrom(Dictionary<string, string> fields, string fallback, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (fields.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
+                return value;
+        }
+
+        return fallback;
+    }
+
+    private static int IntValue(Dictionary<string, string> fields, int fallback, params string[] keys)
+    {
+        var value = ValueFrom(fields, string.Empty, keys);
+        return int.TryParse(value, out var parsed) ? parsed : fallback;
+    }
+
+    private static bool BoolValue(Dictionary<string, string> fields, bool fallback, params string[] keys)
+    {
+        var value = ValueFrom(fields, string.Empty, keys);
+        return value switch
+        {
+            "1" => true,
+            "true" => true,
+            "0" => false,
+            "false" => false,
+            _ => fallback
+        };
+    }
+
+    private static string TransportValue(Dictionary<string, string> fields, string fallback, params string[] keys)
+    {
+        var value = ValueFrom(fields, string.Empty, keys);
+        return value switch
+        {
+            "0" => "UDP",
+            "1" => "TCP",
+            "2" => "TLS",
+            "" => fallback,
+            _ => value.Equals("TCP", StringComparison.OrdinalIgnoreCase) ? "TCP" : "UDP"
+        };
+    }
+
     private static string ExtractAccount(string value)
     {
         if (string.IsNullOrWhiteSpace(value) || value.Equals("none", StringComparison.OrdinalIgnoreCase))
@@ -618,8 +740,17 @@ else
     private void OpenWebInterface()
     {
         if (_phone != null)
-            Navigation.NavigateTo($"http://{_phone.IpAddress}", forceLoad: true);
+        {
+            var scheme = UsesModernHttps(_phone.Model) ? "https" : "http";
+            Navigation.NavigateTo($"{scheme}://{_phone.IpAddress}", forceLoad: true);
+        }
     }
+
+    private static bool UsesModernHttps(string? model) =>
+        !string.IsNullOrWhiteSpace(model) &&
+        (model.Contains("T4", StringComparison.OrdinalIgnoreCase) ||
+         model.Contains("T5", StringComparison.OrdinalIgnoreCase) ||
+         model.Contains("W70", StringComparison.OrdinalIgnoreCase));
 
     private void GoBack() => Navigation.NavigateTo("/");
 

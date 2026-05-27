@@ -54,6 +54,9 @@ public class YealinkScanner(
                     ip,
                     query.Status == YealinkQueryStatus.Forbidden ? "__FORBIDDEN__" : query.Content ?? string.Empty);
 
+            if (phone == null && query.Status == YealinkQueryStatus.Ok)
+                phone = await CreateFromStatusAsync(ip, creds.Value.username, creds.Value.password);
+
             if (phone != null)
             {
                 if (!phone.IsForbidden)

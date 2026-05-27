@@ -1,8 +1,8 @@
 using System.Globalization;
 using System.Net;
 using System.Security.Cryptography;
-using System.Text.Json;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace YealinkAdmin.Services;
@@ -35,6 +35,11 @@ public class YealinkStatusClient
                 lastError = ex;
                 continue;
             }
+            catch (Exception ex) when (scheme == "https" && ex is not UnauthorizedAccessException)
+            {
+                _logger.LogWarning(ex, "HTTPS modern status request failed for {Ip}; trying legacy status endpoint", ip);
+                lastError = ex;
+            }
 
             try
             {
@@ -56,34 +61,81 @@ public class YealinkStatusClient
         throw lastError ?? new InvalidOperationException("Status API is not available");
     }
 
+    public async Task<AccountConfigResult> GetAccountConfigAsync(string ip, string username, string password)
+    {
+        Exception? lastError = null;
+        foreach (var scheme in new[] { "https", "http" })
+        {
+            try
+            {
+                using var client = CreateIsolatedWebClient();
+                var baseUrl = $"{scheme}://{ip}";
+                ApplyModernBrowserHeaders(client, baseUrl);
+                if (!await LoginModernAsync(client, baseUrl, username, password))
+                    throw new UnsupportedYealinkApiException("Modern Yealink login API did not authenticate");
+
+                using var warmupResponse = await PostModernInfoAsync(client, baseUrl, "AccountRegister", "wui");
+                var warmupBody = await warmupResponse.Content.ReadAsStringAsync();
+
+                using var configResponse = await PostModernReadConfigAsync(client, baseUrl, GetAccountRegisterKeys());
+                if (!configResponse.IsSuccessStatusCode)
+                    throw new UnsupportedYealinkApiException($"Account readconfig failed: {configResponse.StatusCode}");
+
+                var configBody = await configResponse.Content.ReadAsStringAsync();
+                var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                AddModernFields(fields, configBody);
+
+                using var accountInfoResponse = await client.GetAsync($"{baseUrl}/api/account/info?type=sip&p=AccountRegister&t={CreateTicksNonce()}");
+                var accountInfoBody = await accountInfoResponse.Content.ReadAsStringAsync();
+                AddModernFields(fields, accountInfoBody);
+
+                if (fields.Count == 0)
+                    throw new UnsupportedYealinkApiException("Account config response did not contain readable fields");
+
+                return new AccountConfigResult(fields, string.Join("\n\n", new[] { warmupBody, configBody, accountInfoBody }));
+            }
+            catch (HttpRequestException ex) when (scheme == "https" && IsSslFailure(ex))
+            {
+                _logger.LogWarning(ex, "HTTPS account config request failed for {Ip}; retrying over HTTP", ip);
+                lastError = ex;
+                continue;
+            }
+            catch (Exception ex) when (scheme == "https" && ex is not UnauthorizedAccessException)
+            {
+                lastError = ex;
+                continue;
+            }
+        }
+
+        throw lastError ?? new InvalidOperationException("Account config API is not available");
+    }
+
     private async Task<StatusResult> GetModernApiStatusAsync(string scheme, string ip, string username, string password)
     {
         using var client = CreateIsolatedWebClient();
-        client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/json, text/plain, */*");
-        client.DefaultRequestHeaders.TryAddWithoutValidation("X-Requested-With", "XMLHttpRequest");
 
         var baseUrl = $"{scheme}://{ip}";
+        ApplyModernBrowserHeaders(client, baseUrl);
         if (!await LoginModernAsync(client, baseUrl, username, password))
-            throw new UnauthorizedAccessException("Login failed");
+            throw new UnsupportedYealinkApiException("Modern Yealink login API did not authenticate");
 
         var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var rawParts = new List<string>();
-        var endpoints = new[]
+        var requests = new (string Page, string[] IdList)[]
         {
-            "/api/common/info?p=StatusGeneral",
-            "/api/common/info?p=StatusNetwork",
-            "/api/common/info?p=StatusAccount",
-            "/api/common/info?p=StatusGeneral,StatusNetwork,StatusAccount"
+            ("StatusGeneral", new[] { "wui" }),
+            ("StatusGeneral", new[] { "system", "network", "cert", "account.info", "dsskey.expkey.list", "dsskey.ehs40", "accessory.mic_info" }),
+            ("StatusGeneral", new[] { "system", "network", "cert" })
         };
 
-        foreach (var endpoint in endpoints)
+        foreach (var request in requests)
         {
-            using var response = await client.GetAsync($"{baseUrl}{endpoint}");
+            using var response = await PostModernInfoAsync(client, baseUrl, request.Page, request.IdList);
             if (response.StatusCode == HttpStatusCode.NotFound || response.StatusCode == HttpStatusCode.BadRequest)
                 continue;
 
             if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-                throw new UnauthorizedAccessException("Login failed");
+                throw new UnsupportedYealinkApiException("Modern Yealink status API rejected the session");
 
             if (!response.IsSuccessStatusCode)
                 continue;
@@ -92,7 +144,7 @@ public class YealinkStatusClient
             if (string.IsNullOrWhiteSpace(text))
                 continue;
 
-            rawParts.Add($"<!-- {endpoint} -->\n{text}");
+            rawParts.Add($"<!-- {request.Page}: {string.Join(",", request.IdList)} -->\n{text}");
             AddModernFields(fields, text);
         }
 
@@ -105,23 +157,16 @@ public class YealinkStatusClient
 
     private static async Task<bool> LoginModernAsync(HttpClient client, string baseUrl, string username, string password)
     {
-        var quickLoginUrl = $"{baseUrl}/api/auth/login?@{Uri.EscapeDataString(username)}:{Uri.EscapeDataString(password)}";
-        using (var quickResponse = await client.GetAsync(quickLoginUrl))
-        {
-            if (quickResponse.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-                return false;
-
-            if (quickResponse.IsSuccessStatusCode)
-                return true;
-        }
+        var rsaParameters = await GetModernRsaParametersAsync(client, baseUrl);
+        var encryptedPassword = EncryptRsaHex(password, rsaParameters);
 
         using var content = new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["username"] = username,
-            ["pwd"] = password
+            ["pwd"] = encryptedPassword
         });
 
-        using var response = await client.PostAsync($"{baseUrl}/api/auth/login?p=Login&t=1", content);
+        using var response = await client.PostAsync($"{baseUrl}/api/auth/login?p=Login&t={CreateTicksNonce()}", content);
         var body = await response.Content.ReadAsStringAsync();
 
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
@@ -130,10 +175,167 @@ public class YealinkStatusClient
         if (!response.IsSuccessStatusCode)
             throw new UnsupportedYealinkApiException("Modern Yealink login API is not supported");
 
-        return body.Contains("\"ret\":\"ok\"", StringComparison.OrdinalIgnoreCase) ||
-               body.Contains("\"data\":\"ok\"", StringComparison.OrdinalIgnoreCase) ||
-               body.Contains("ok", StringComparison.OrdinalIgnoreCase);
+        var authenticated = string.IsNullOrWhiteSpace(body) ||
+                            IsModernLoginSuccess(body) ||
+                            !LooksLikeModernLoginFailure(body);
+
+        if (authenticated)
+            await WarmModernLoginPageAsync(client, baseUrl);
+
+        return authenticated;
     }
+
+    private static async Task WarmModernLoginPageAsync(HttpClient client, string baseUrl)
+    {
+        try
+        {
+            using var response = await PostModernInfoAsync(client, baseUrl, "Login", "wui");
+        }
+        catch
+        {
+            // Some firmware skips this request; status/config pages can still work without it.
+        }
+    }
+
+    private static async Task<RSAParameters> GetModernRsaParametersAsync(HttpClient client, string baseUrl)
+    {
+        using var response = await PostModernInfoAsync(client, baseUrl, "Login", "wui.common.rsaN", "wui.common.rsaE");
+        if (!response.IsSuccessStatusCode)
+            throw new UnsupportedYealinkApiException("Modern Yealink RSA endpoint is not supported");
+
+        var body = await response.Content.ReadAsStringAsync();
+        var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        AddModernFields(fields, body);
+
+        var modulus = FindModernValue(fields, "wui.common.rsaN", "rsaN", "rsa_n", "n");
+        var exponent = FindModernValue(fields, "wui.common.rsaE", "rsaE", "rsa_e", "e");
+
+        if (string.IsNullOrWhiteSpace(modulus) || string.IsNullOrWhiteSpace(exponent))
+            throw new UnsupportedYealinkApiException("Modern Yealink RSA keys were not found");
+
+        return new RSAParameters
+        {
+            Modulus = Convert.FromHexString(CleanHex(modulus)),
+            Exponent = Convert.FromHexString(CleanHex(exponent))
+        };
+    }
+
+    private static async Task<HttpResponseMessage> PostModernInfoAsync(HttpClient client, string baseUrl, string page, params string[] idList)
+    {
+        var payload = JsonSerializer.Serialize(new { idlist = idList });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        content.Headers.ContentType!.CharSet = "UTF-8";
+        return await client.PostAsync($"{baseUrl}/api/common/info?p={page}&t={CreateTicksNonce()}", content);
+    }
+
+    private static void ApplyModernBrowserHeaders(HttpClient client, string baseUrl)
+    {
+        client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/json, text/plain, */*");
+        client.DefaultRequestHeaders.TryAddWithoutValidation("Origin", baseUrl);
+        client.DefaultRequestHeaders.TryAddWithoutValidation("Referer", $"{baseUrl}/");
+        client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36");
+    }
+
+    private static async Task<HttpResponseMessage> PostModernReadConfigAsync(HttpClient client, string baseUrl, string[] formData)
+    {
+        var payload = JsonSerializer.Serialize(new { formData });
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        content.Headers.ContentType!.CharSet = "UTF-8";
+        return await client.PostAsync($"{baseUrl}/api/inner/readconfig?p=AccountRegister&t={CreateTicksNonce()}", content);
+    }
+
+    private static string[] GetAccountRegisterKeys() =>
+    [
+        "AccountEnable.1",
+        "AccountLabel.1",
+        "AccountDisplayName.1",
+        "AccountRegisterName.1",
+        "AccountUserName.1",
+        "AccountPassword.1",
+        "AccountServerAddr1.1",
+        "AccountServerPort1.1",
+        "AccountServerTransport1.1",
+        "AccountServerExpires1.1",
+        "AccountServerRetryCounts1.1",
+        "AccountServerAddr2.1",
+        "AccountServerPort2.1",
+        "AccountServerTransport2.1",
+        "AccountServerExpires2.1",
+        "AccountServerRetryCounts2.1",
+        "AccountOutboundSwitch.1",
+        "AccountOutboundProxy1.1",
+        "AccountOutboundPort1.1",
+        "AccountOutboundProxy2.1",
+        "AccountOutboundPort2.1",
+        "AccountProxyFallbackInterval.1",
+        "AccountStunSwitch.1",
+        "AccountServerAddr.1.1",
+        "AccountServerPort.1.1",
+        "AccountServerTransport.1.1",
+        "AccountServerExpires.1.1",
+        "AccountServerRetryCounts.1.1",
+        "AccountServerAddr.1.2",
+        "AccountServerPort.1.2",
+        "AccountServerTransport.1.2",
+        "AccountServerExpires.1.2",
+        "AccountServerRetryCounts.1.2",
+        "AccountOutboundProxy.1.1",
+        "AccountOutboundPort.1.1",
+        "AccountOutboundProxy.1.2",
+        "AccountOutboundPort.1.2"
+    ];
+
+    private static string EncryptRsaHex(string text, RSAParameters parameters)
+    {
+        using var rsa = RSA.Create();
+        rsa.ImportParameters(parameters);
+        var encrypted = rsa.Encrypt(Encoding.UTF8.GetBytes(text), RSAEncryptionPadding.Pkcs1);
+        return Convert.ToHexString(encrypted).ToLowerInvariant();
+    }
+
+    private static string? FindModernValue(Dictionary<string, string> fields, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            var match = fields.FirstOrDefault(x =>
+                x.Key.Equals(key, StringComparison.OrdinalIgnoreCase) ||
+                x.Key.EndsWith($".{key}", StringComparison.OrdinalIgnoreCase));
+
+            if (!string.IsNullOrWhiteSpace(match.Value))
+                return match.Value;
+        }
+
+        return null;
+    }
+
+    private static string CleanHex(string value) =>
+        Regex.Replace(value, "[^0-9a-fA-F]", string.Empty);
+
+    private static bool IsModernLoginSuccess(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return false;
+
+        if (body.Contains("\"ret\":\"ok\"", StringComparison.OrdinalIgnoreCase) ||
+            body.Contains("\"result\":\"ok\"", StringComparison.OrdinalIgnoreCase) ||
+            body.Contains("\"data\":\"ok\"", StringComparison.OrdinalIgnoreCase) ||
+            body.Contains("\"authstatus\":\"done\"", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (body.Contains("authstatus", StringComparison.OrdinalIgnoreCase) &&
+            body.Contains("done", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return false;
+    }
+
+    private static bool LooksLikeModernLoginFailure(string body) =>
+        body.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+        body.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
+        body.Contains("denied", StringComparison.OrdinalIgnoreCase) ||
+        body.Contains("invalid", StringComparison.OrdinalIgnoreCase) ||
+        body.Contains("\"ret\":\"fail\"", StringComparison.OrdinalIgnoreCase) ||
+        body.Contains("\"result\":\"fail\"", StringComparison.OrdinalIgnoreCase);
 
     private static void AddModernFields(Dictionary<string, string> fields, string text)
     {
@@ -490,6 +692,9 @@ public class YealinkStatusClient
     private static string CreateNonce() =>
         Random.Shared.NextDouble().ToString("R", CultureInfo.InvariantCulture);
 
+    private static string CreateTicksNonce() =>
+        DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture);
+
     private static bool IsSslFailure(HttpRequestException ex) =>
         ex.Message.Contains("SSL connection", StringComparison.OrdinalIgnoreCase) ||
         ex.InnerException?.Message.Contains("SSL", StringComparison.OrdinalIgnoreCase) == true ||
@@ -521,6 +726,18 @@ public class StatusResult
     {
         Fields = fields;
         RawHtml = rawHtml;
+    }
+}
+
+public class AccountConfigResult
+{
+    public Dictionary<string, string> Fields { get; }
+    public string RawText { get; }
+
+    public AccountConfigResult(Dictionary<string, string> fields, string rawText)
+    {
+        Fields = fields;
+        RawText = rawText;
     }
 }
 
