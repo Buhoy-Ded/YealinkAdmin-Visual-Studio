@@ -1,3 +1,5 @@
+using YealinkAdmin.Models;
+
 namespace YealinkAdmin.Services;
 
 public static class ModelResolver
@@ -7,7 +9,8 @@ public static class ModelResolver
         ["107"] = "SIP-T43U",
         ["108"] = "SIP-T46U",
         ["97"] = "SIP-T57W",
-        ["127"] = "SIP-T30P"
+        ["127"] = "SIP-T30P",
+        ["146"] = "SIP-W70B"
     };
 
     private static readonly Dictionary<string, string> FirmwareCodeToModel = new(StringComparer.OrdinalIgnoreCase)
@@ -53,6 +56,30 @@ public static class ModelResolver
         TryGetAny(status, out var firmware, "Firmware Version", "FirmwareVersion", "Firmware", "Версия ПО");
 
         return Resolve(firmware, build);
+    }
+
+    public static YealinkPhoneFamily ResolveFamily(string? model, string? firmware)
+    {
+        if (!string.IsNullOrWhiteSpace(model))
+        {
+            if (model.Contains("W70B", StringComparison.OrdinalIgnoreCase))
+                return YealinkPhoneFamily.WSeries;
+
+            if (model.Contains("T43U", StringComparison.OrdinalIgnoreCase) ||
+                model.Contains("T46U", StringComparison.OrdinalIgnoreCase) ||
+                model.Contains("T57W", StringComparison.OrdinalIgnoreCase))
+                return YealinkPhoneFamily.ModernApi;
+        }
+
+        var firmwareCode = GetFirstVersionNumber(firmware);
+        return firmwareCode switch
+        {
+            "108" => YealinkPhoneFamily.ModernApi,
+            "96" => YealinkPhoneFamily.ModernApi,
+            "146" => YealinkPhoneFamily.WSeries,
+            "124" => YealinkPhoneFamily.T3x,
+            _ => YealinkPhoneFamily.Unknown
+        };
     }
 
     private static string? ResolveFromBuild(string? buildVersion)

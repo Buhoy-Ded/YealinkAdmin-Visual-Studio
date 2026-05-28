@@ -1,0 +1,73 @@
+@inject SecureCredentialStorage Credentials
+@implements IDisposable
+@rendermode RenderMode.InteractiveServer
+
+@if (!Credentials.IsAdminConfigured)
+{
+    <button class="btn primary" @onclick="ShowAdminLogin">Войти в админ-режим</button>
+}
+else
+{
+    <button class="btn secondary" @onclick="AdminLogout">Выйти из админ-режима</button>
+}
+
+@if (_showAdminLogin)
+{
+    <div class="modal">
+        <div class="modal-content">
+            <h4>Админ-режим телефонов</h4>
+            <div class="field-stack">
+                <label>
+                    <span>Логин администратора телефона</span>
+                    <input type="text" @bind="_adminUsername" />
+                </label>
+                <label>
+                    <span>Пароль администратора телефона</span>
+                    <input type="password" @bind="_adminPassword" />
+                </label>
+            </div>
+            <div class="action-row">
+                <button class="btn primary" @onclick="AdminLogin">Включить</button>
+                <button class="btn ghost" @onclick='() => _showAdminLogin = false'>Отмена</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private bool _showAdminLogin;
+    private string _adminUsername = string.Empty;
+    private string _adminPassword = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        Credentials.Changed += OnCredentialsChanged;
+    }
+
+    private void ShowAdminLogin() => _showAdminLogin = true;
+
+    private void AdminLogin()
+    {
+        if (!string.IsNullOrWhiteSpace(_adminUsername) && !string.IsNullOrWhiteSpace(_adminPassword))
+        {
+            Credentials.SetAdminCredentials(_adminUsername, _adminPassword, TimeSpan.FromMinutes(30));
+            _showAdminLogin = false;
+            _adminPassword = string.Empty;
+        }
+    }
+
+    private void AdminLogout()
+    {
+        Credentials.ClearAdminCredentials();
+    }
+
+    private void OnCredentialsChanged()
+    {
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Credentials.Changed -= OnCredentialsChanged;
+    }
+}

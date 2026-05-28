@@ -5,6 +5,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.UseStaticWebAssets();
 
+builder.Services.AddDataProtection();
 builder.Services.AddControllers();
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
@@ -16,6 +17,8 @@ builder.Services.AddSingleton<YealinkScanner>();
 builder.Services.AddSingleton<YealinkWebClient>();
 builder.Services.AddSingleton<YealinkConfigManager>();
 builder.Services.AddSingleton<YealinkStatusClient>();
+builder.Services.AddSingleton<YealinkModernStatusParser>();
+builder.Services.AddSingleton<YealinkModernApiClient>();
 
 builder.Services.AddHttpClient("yealink", client =>
 {

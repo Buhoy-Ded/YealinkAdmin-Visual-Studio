@@ -11,4 +11,5 @@ public class PhoneInfo
     public DateTime LastSeen { get; set; }
     public bool IsForbidden { get; set; }
     public Dictionary<string, string> StatusFields { get; set; } = new();
+    public Dictionary<string, string> ConfigFields { get; set; } = new();
 }

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
+using YealinkAdmin.Models;
 
 namespace YealinkAdmin.Services;
 
@@ -34,6 +35,31 @@ public class YealinkConfigManager
             throw new InvalidOperationException($"Download failed: {response.StatusCode}");
 
         return await response.Content.ReadAsByteArrayAsync();
+    }
+
+    public async Task<OperationResult> ExportCfgAsync(
+        string ip,
+        string username,
+        string password,
+        string type = "all",
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var bytes = await DownloadConfigAsync(ip, username, password);
+            var dir = Path.Combine(AppContext.BaseDirectory, "exports", SafePathSegment(ip));
+            Directory.CreateDirectory(dir);
+
+            var filePath = Path.Combine(dir, $"{SafePathSegment(ip)}-{type}.cfg");
+            await File.WriteAllBytesAsync(filePath, bytes, ct);
+
+            return OperationResult.Ok($"CFG export сохранен: {filePath}", filePath);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Legacy CFG export failed for {Ip}", ip);
+            return OperationResult.Fail($"Ошибка export CFG: {ex.Message}");
+        }
     }
 
     public async Task<UploadResult> UploadConfigAsync(
@@ -112,34 +138,83 @@ public class YealinkConfigManager
 
     public async Task<bool> RebootAsync(string ip, string username, string password)
     {
-        var url = $"https://{ip}/servlet?key=Reboot";
-        var referer = $"https://{ip}/servlet?m=mod_data&p=settings-upgrade&q=load";
+        Exception? lastError = null;
+        var creds = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes($"{username}:{password}"));
 
-        using var client = _httpFactory.CreateClient("yealink-web");
-
-        try
+        foreach (var scheme in new[] { "http", "https" })
         {
-            client.DefaultRequestHeaders.Add("Referer", referer);
-            using var response = await client.GetAsync(url);
+            var url = $"{scheme}://{ip}/servlet?key=Reboot";
+            var referer = $"{scheme}://{ip}/servlet?m=mod_data&p=settings-upgrade&q=load";
 
-            if (response.StatusCode != System.Net.HttpStatusCode.Unauthorized)
-                return response.StatusCode == System.Net.HttpStatusCode.OK;
+            using var client = _httpFactory.CreateClient("yealink-web");
 
-            var creds = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes($"{username}:{password}"));
-            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", creds);
-            using var retryResponse = await client.GetAsync(url);
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.Referrer = new Uri(referer);
+                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", creds);
+                request.Headers.ConnectionClose = true;
 
-            return retryResponse.StatusCode == System.Net.HttpStatusCode.OK;
+                using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+                return IsRebootAccepted(response.StatusCode);
+            }
+            catch (HttpRequestException ex) when (IsResetFailure(ex))
+            {
+                lastError = ex;
+                _logger.LogInformation(ex, "Reboot request for {Ip} over {Scheme} closed the connection; treating it as accepted", ip, scheme);
+                return true;
+            }
+            catch (IOException ex) when (scheme == "https")
+            {
+                lastError = ex;
+                _logger.LogDebug(ex, "HTTPS reboot IO failure for {Ip}; HTTP was already attempted", ip);
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                _logger.LogWarning(ex, "Reboot request failed for {Ip} over {Scheme}", ip, scheme);
+            }
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Reboot failed for {Ip}", ip);
-            return false;
-        }
+
+        if (lastError != null)
+            _logger.LogError(lastError, "Reboot failed for {Ip}", ip);
+
+        return false;
     }
 
     private static string CreateNonce() =>
         Random.Shared.NextDouble().ToString("R", CultureInfo.InvariantCulture);
+
+    private static bool IsRebootAccepted(System.Net.HttpStatusCode statusCode) =>
+        statusCode is System.Net.HttpStatusCode.OK
+            or System.Net.HttpStatusCode.NoContent
+            or System.Net.HttpStatusCode.Accepted
+            or System.Net.HttpStatusCode.Found;
+
+    private static bool IsResetFailure(HttpRequestException ex)
+    {
+        var message = GetExceptionText(ex);
+        return message.Contains("forcibly closed", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("принудительно разорвал", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetExceptionText(Exception ex)
+    {
+        var messages = new List<string>();
+        for (var current = ex; current != null; current = current.InnerException)
+            messages.Add(current.Message);
+
+        return string.Join(" / ", messages);
+    }
+
+    private static string SafePathSegment(string value)
+    {
+        var filename = value.Replace(':', '_').Replace('/', '_').Replace('\\', '_');
+        foreach (var invalid in Path.GetInvalidFileNameChars())
+            filename = filename.Replace(invalid, '_');
+
+        return string.IsNullOrWhiteSpace(filename) ? "phone" : filename;
+    }
 }
 
 public record UploadResult(bool Success, string Filetype, int ResultCode, string RawResponse);

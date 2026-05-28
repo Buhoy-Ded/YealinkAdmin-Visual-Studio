@@ -6,6 +6,8 @@ public class SecureCredentialStorage
     private string? _adminPassword;
     private DateTime? _adminSessionExpiry;
 
+    public event Action? Changed;
+
     public bool IsAdminConfigured =>
         _adminUsername != null &&
         _adminPassword != null &&
@@ -16,6 +18,7 @@ public class SecureCredentialStorage
         _adminUsername = username;
         _adminPassword = password;
         _adminSessionExpiry = sessionDuration.HasValue ? DateTime.UtcNow.Add(sessionDuration.Value) : null;
+        Changed?.Invoke();
     }
 
     public void ClearAdminCredentials()
@@ -23,6 +26,7 @@ public class SecureCredentialStorage
         _adminUsername = null;
         _adminPassword = null;
         _adminSessionExpiry = null;
+        Changed?.Invoke();
     }
 
     public (string username, string password)? GetAdminCredentials()

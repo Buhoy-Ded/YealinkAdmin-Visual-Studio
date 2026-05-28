@@ -4,6 +4,7 @@
 @inject SecureCredentialStorage Credentials
 @inject YealinkStatusClient StatusClient
 @inject YealinkConfigManager ConfigManager
+@inject YealinkModernApiClient ModernApiClient
 @rendermode RenderMode.InteractiveServer
 
 @if (_phone == null)
@@ -24,10 +25,6 @@ else
         <div class="heading-actions">
             <button class="btn ghost" @onclick="GoBack">Назад</button>
             <button class="btn" @onclick="OpenWebInterface">Веб-интерфейс</button>
-            @if (!Credentials.IsAdminConfigured)
-            {
-                <button class="btn primary" @onclick="ShowAdminLogin">Войти как админ</button>
-            }
         </div>
     </section>
 
@@ -81,7 +78,7 @@ else
                     <h2>Состояние телефона</h2>
                     <p>Основные параметры устройства и регистрации.</p>
                 </div>
-                <button class="btn primary" @onclick="LoadStatusFromWeb" disabled="@(_loadingStatus || !Credentials.IsAdminConfigured)">
+                <button class="btn primary" @onclick="LoadStatusSmart" disabled="@(_loadingStatus || !Credentials.IsAdminConfigured)">
                     @(_loadingStatus ? "Загрузка..." : "Обновить")
                 </button>
             </div>
@@ -128,7 +125,9 @@ else
                     <button class="btn" @onclick="LoadAccountConfigFromWeb" disabled="@(_loadingAccountConfig || !Credentials.IsAdminConfigured)">
                         @(_loadingAccountConfig ? "Загрузка..." : "Загрузить из телефона")
                     </button>
-                    <button class="btn primary" @onclick="SaveConfig">Сохранить</button>
+                    <button class="btn primary" @onclick="SaveConfig" disabled="@(_savingConfig || !Credentials.IsAdminConfigured)">
+                        @(_savingConfig ? "Сохранение..." : "Сохранить")
+                    </button>
                 </div>
             </div>
 
@@ -143,32 +142,28 @@ else
                 <section class="form-panel">
                     <h3>Линия</h3>
                     <div class="form-grid">
-                        <label>
-                            <span>Статус регистрации</span>
-                            <input type="text" value="@_registrationStatus" readonly />
-                        </label>
                         <label class="switch-row">
-                            <span>Активная линия</span>
+                            <span>Активная линия <span class="dirty-mark">@DirtyMark("LineEnabled")</span></span>
                             <input type="checkbox" @bind="_lineEnabled" />
                         </label>
                         <label>
-                            <span>Лейбл</span>
+                            <span>Лейбл <span class="dirty-mark">@DirtyMark("LineLabel")</span></span>
                             <input type="text" @bind="_lineLabel" />
                         </label>
                         <label>
-                            <span>Отображаемое имя</span>
+                            <span>Отображаемое имя <span class="dirty-mark">@DirtyMark("DisplayName")</span></span>
                             <input type="text" @bind="_displayName" />
                         </label>
                         <label>
-                            <span>Имя регистрации</span>
+                            <span>Имя регистрации <span class="dirty-mark">@DirtyMark("RegisterName")</span></span>
                             <input type="text" @bind="_registerName" />
                         </label>
                         <label>
-                            <span>Имя пользователя</span>
+                            <span>Имя пользователя <span class="dirty-mark">@DirtyMark("UserName")</span></span>
                             <input type="text" @bind="_userName" />
                         </label>
                         <label>
-                            <span>Пароль</span>
+                            <span>Пароль <span class="dirty-mark">@DirtyMark("Password")</span></span>
                             <input type="password" @bind="_password" placeholder="••••••••" />
                         </label>
                     </div>
@@ -178,26 +173,26 @@ else
                     <h3>SIP-сервер 1</h3>
                     <div class="form-grid">
                         <label>
-                            <span>Адрес SIP-сервера</span>
+                            <span>Адрес SIP-сервера <span class="dirty-mark">@DirtyMark("SipServer1")</span></span>
                             <input type="text" @bind="_sipServer1" />
                         </label>
                         <label>
-                            <span>Порт</span>
+                            <span>Порт <span class="dirty-mark">@DirtyMark("SipPort1")</span></span>
                             <input type="number" @bind="_sipPort1" />
                         </label>
                         <label>
-                            <span>Transport</span>
+                            <span>Transport <span class="dirty-mark">@DirtyMark("Transport1")</span></span>
                             <select @bind="_transport1">
                                 <option>UDP</option>
                                 <option>TCP</option>
                             </select>
                         </label>
                         <label>
-                            <span>Таймаут сервера</span>
+                            <span>Таймаут сервера <span class="dirty-mark">@DirtyMark("ServerTimeout1")</span></span>
                             <input type="number" @bind="_serverTimeout1" />
                         </label>
                         <label>
-                            <span>Количество запросов</span>
+                            <span>Количество запросов <span class="dirty-mark">@DirtyMark("RetryCount1")</span></span>
                             <input type="number" @bind="_retryCount1" />
                         </label>
                     </div>
@@ -207,61 +202,27 @@ else
                     <h3>SIP-сервер 2</h3>
                     <div class="form-grid">
                         <label>
-                            <span>Адрес SIP-сервера</span>
+                            <span>Адрес SIP-сервера <span class="dirty-mark">@DirtyMark("SipServer2")</span></span>
                             <input type="text" @bind="_sipServer2" />
                         </label>
                         <label>
-                            <span>Порт</span>
+                            <span>Порт <span class="dirty-mark">@DirtyMark("SipPort2")</span></span>
                             <input type="number" @bind="_sipPort2" />
                         </label>
                         <label>
-                            <span>Transport</span>
+                            <span>Transport <span class="dirty-mark">@DirtyMark("Transport2")</span></span>
                             <select @bind="_transport2">
                                 <option>UDP</option>
                                 <option>TCP</option>
                             </select>
                         </label>
                         <label>
-                            <span>Таймаут сервера</span>
+                            <span>Таймаут сервера <span class="dirty-mark">@DirtyMark("ServerTimeout2")</span></span>
                             <input type="number" @bind="_serverTimeout2" />
                         </label>
                         <label>
-                            <span>Количество запросов</span>
+                            <span>Количество запросов <span class="dirty-mark">@DirtyMark("RetryCount2")</span></span>
                             <input type="number" @bind="_retryCount2" />
-                        </label>
-                    </div>
-                </section>
-
-                <section class="form-panel">
-                    <h3>Outbound и NAT</h3>
-                    <div class="form-grid">
-                        <label class="switch-row">
-                            <span>Использовать Outbound-сервер</span>
-                            <input type="checkbox" @bind="_outboundEnabled" />
-                        </label>
-                        <label>
-                            <span>Outbound Proxy Server 1</span>
-                            <input type="text" @bind="_outboundProxy1" />
-                        </label>
-                        <label>
-                            <span>Порт Proxy 1</span>
-                            <input type="number" @bind="_outboundPort1" />
-                        </label>
-                        <label>
-                            <span>Outbound Proxy Server 2</span>
-                            <input type="text" @bind="_outboundProxy2" />
-                        </label>
-                        <label>
-                            <span>Порт Proxy 2</span>
-                            <input type="number" @bind="_outboundPort2" />
-                        </label>
-                        <label>
-                            <span>Интервал Proxy</span>
-                            <input type="number" @bind="_proxyInterval" />
-                        </label>
-                        <label class="switch-row">
-                            <span>NAT</span>
-                            <input type="checkbox" @bind="_natEnabled" />
                         </label>
                     </div>
                 </section>
@@ -274,13 +235,10 @@ else
                 </div>
 
                 <div class="cfg-actions">
-                    <label>
-                        <span>Экспорт</span>
-                        <select @bind="_exportScope">
-                            <option>Все настройки</option>
-                        </select>
-                    </label>
-                    <button class="btn" @onclick="ExportConfig">Экспорт</button>
+                    <button class="btn" @onclick="ExportConfig" disabled="@(_exportingConfig || !Credentials.IsAdminConfigured)">
+                        @(_exportingConfig ? "Экспорт..." : "Экспорт")
+                    </button>
+                    <div class="selected-file export-path">@DisplayValue(_lastExportPath)</div>
                 </div>
 
                 <div class="cfg-actions">
@@ -301,43 +259,16 @@ else
     }
 }
 
-@if (_showAdminLogin)
-{
-    <div class="modal">
-        <div class="modal-content">
-            <h4>Администраторский доступ</h4>
-            <div class="field-stack">
-                <label>
-                    <span>Логин</span>
-                    <input type="text" @bind="_adminUsername" />
-                </label>
-                <label>
-                    <span>Пароль</span>
-                    <input type="password" @bind="_adminPassword" />
-                </label>
-            </div>
-            <div class="action-row">
-                <button class="btn primary" @onclick="AdminLogin">Войти</button>
-                <button class="btn ghost" @onclick='() => _showAdminLogin = false'>Отмена</button>
-            </div>
-        </div>
-    </div>
-}
-
 @code {
     [Parameter] public string Ip { get; set; } = string.Empty;
 
     private PhoneInfo? _phone;
     private string _activeTab = "status";
-    private bool _showAdminLogin;
-    private string _adminUsername = string.Empty;
-    private string _adminPassword = string.Empty;
 
     private bool _loadingStatus;
     private string? _statusError;
     private string _rawHtmlPreview = string.Empty;
 
-    private string _registrationStatus = "Не загружен";
     private bool _lineEnabled = true;
     private string _lineLabel = string.Empty;
     private string _displayName = string.Empty;
@@ -354,19 +285,35 @@ else
     private string _transport2 = "UDP";
     private int _serverTimeout2 = 3600;
     private int _retryCount2 = 3;
-    private bool _outboundEnabled;
-    private string _outboundProxy1 = string.Empty;
-    private int _outboundPort1 = 5060;
-    private string _outboundProxy2 = string.Empty;
-    private int _outboundPort2 = 5060;
-    private int _proxyInterval = 3600;
-    private bool _natEnabled;
 
-    private string _exportScope = "Все настройки";
     private IBrowserFile? _selectedCfgFile;
     private bool _importingConfig;
+    private bool _exportingConfig;
+    private bool _savingConfig;
     private bool _loadingAccountConfig;
     private string _configMessage = string.Empty;
+    private string _lastExportPath = string.Empty;
+    private Dictionary<string, string> _loadedConfigValues = new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly IReadOnlyDictionary<string, string> ConfigToCfgKey = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["LineEnabled"] = "account.1.enable",
+        ["LineLabel"] = "account.1.label",
+        ["DisplayName"] = "account.1.display_name",
+        ["RegisterName"] = "account.1.auth_name",
+        ["UserName"] = "account.1.user_name",
+        ["Password"] = "account.1.password",
+        ["SipServer1"] = "account.1.sip_server.1.address",
+        ["SipPort1"] = "account.1.sip_server.1.port",
+        ["Transport1"] = "account.1.sip_server.1.transport_type",
+        ["ServerTimeout1"] = "account.1.sip_server.1.expires",
+        ["RetryCount1"] = "account.1.sip_server.1.retry_counts",
+        ["SipServer2"] = "account.1.sip_server.2.address",
+        ["SipPort2"] = "account.1.sip_server.2.port",
+        ["Transport2"] = "account.1.sip_server.2.transport_type",
+        ["ServerTimeout2"] = "account.1.sip_server.2.expires",
+        ["RetryCount2"] = "account.1.sip_server.2.retry_counts"
+    };
 
     private IEnumerable<StatusSection> StatusSections => new[]
     {
@@ -397,7 +344,7 @@ else
         }),
         new StatusSection("Регистрация", new[]
         {
-            Row("Аккаунт 1", "Account 1", "Account")
+            Row("Аккаунт 1", "Account 1", "Account", "Аккаунт 1", "Аккаунт")
         })
     };
 
@@ -411,22 +358,20 @@ else
     {
         if (_phone == null) return;
 
+        if (_phone.ConfigFields is { Count: > 0 } cachedConfig)
+        {
+            ApplyStoredConfig(cachedConfig);
+            _loadedConfigValues = CurrentConfigValues();
+            return;
+        }
+
         var account = ExtractAccount(_phone.Account);
         _lineLabel = account;
         _displayName = account;
         _registerName = account;
         _userName = account;
-    }
-
-    private void ShowAdminLogin() => _showAdminLogin = true;
-
-    private void AdminLogin()
-    {
-        if (!string.IsNullOrWhiteSpace(_adminUsername) && !string.IsNullOrWhiteSpace(_adminPassword))
-        {
-            Credentials.SetAdminCredentials(_adminUsername, _adminPassword, TimeSpan.FromMinutes(30));
-            _showAdminLogin = false;
-        }
+        ApplyStatusToConfigDefaults();
+        _loadedConfigValues = CurrentConfigValues();
     }
 
     private async Task LoadStatusFromWeb()
@@ -476,6 +421,161 @@ else
         await InvokeAsync(StateHasChanged);
     }
 
+    private async Task LoadStatusSmart()
+    {
+        if (_phone == null) return;
+
+        var creds = Credentials.GetAdminCredentials();
+        if (creds == null)
+        {
+            _statusError = "Требуется admin-авторизация.";
+            return;
+        }
+
+        _loadingStatus = true;
+        _statusError = null;
+        _rawHtmlPreview = string.Empty;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            if (ShouldUseModernStatusClient())
+            {
+                var modernStatus = await ModernApiClient.GetStatusAsync(_phone.IpAddress, creds.Value.username, creds.Value.password);
+                ApplyModernStatus(modernStatus);
+                _rawHtmlPreview = string.Join(Environment.NewLine, modernStatus.RawValues.Take(80).Select(x => $"{x.Key}: {x.Value}"));
+            }
+            else
+            {
+                var result = await StatusClient.GetStatusAsync(_phone.IpAddress, creds.Value.username, creds.Value.password);
+                _phone.StatusFields = result.Fields;
+
+                var betterModel = ModelResolver.ResolveFromStatus(result.Fields);
+                if (!string.IsNullOrWhiteSpace(betterModel))
+                    _phone.Model = betterModel;
+
+                if (_phone.MacAddress == "unknown" && TryValue(out var mac, "MAC Address", "MAC-адрес"))
+                    _phone.MacAddress = mac;
+
+                if (string.IsNullOrWhiteSpace(_phone.SerialNumber) && TryValue(out var serial, "Device ID", "Machine ID", "ID устройства"))
+                    _phone.SerialNumber = serial;
+
+                _rawHtmlPreview = result.RawHtml[..Math.Min(2000, result.RawHtml.Length)];
+            }
+
+            ApplyStatusToConfigDefaults();
+            Store.Upsert(_phone);
+            _statusError = null;
+        }
+        catch (Exception ex)
+        {
+            _statusError = $"Ошибка загрузки статуса: {GetUsefulErrorMessage(ex)}";
+        }
+
+        _loadingStatus = false;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private bool ShouldUseModernStatusClient()
+    {
+        if (_phone == null)
+            return false;
+
+        var firmware = TryValue(out var cachedFirmware, "Firmware Version", "FirmwareVersion", "Firmware")
+            ? cachedFirmware
+            : null;
+
+        var family = ModelResolver.ResolveFamily(_phone.Model, firmware);
+        return family is YealinkPhoneFamily.ModernApi or YealinkPhoneFamily.WSeries || UsesModernHttps(_phone.Model);
+    }
+
+    private void ApplyModernStatus(PhoneStatus status)
+    {
+        if (_phone == null)
+            return;
+
+        var fields = new Dictionary<string, string>(status.RawValues, StringComparer.OrdinalIgnoreCase);
+        var resolvedModel = ModelResolver.Resolve(status.FirmwareVersion, status.HardwareVersion);
+
+        AddField(fields, "Firmware Version", status.FirmwareVersion);
+        AddField(fields, "FirmwareVersion", status.FirmwareVersion);
+        AddField(fields, "Build Version", status.HardwareVersion);
+        AddField(fields, "Build", status.HardwareVersion);
+        AddField(fields, "Model", status.Model ?? resolvedModel);
+        AddField(fields, "MAC Address", status.MacAddress);
+        AddField(fields, "MACAddress", status.MacAddress);
+        AddField(fields, "Device ID", status.DeviceId);
+        AddField(fields, "Machine ID", status.DeviceId);
+        AddField(fields, "WAN Port Type", status.NetworkMode);
+        AddField(fields, "Internet Port Type", status.NetworkMode);
+        AddField(fields, "IPv4 WAN IP Address", status.IpAddressV4);
+        AddField(fields, "WAN IP Address", status.IpAddressV4);
+        AddField(fields, "IP Address", status.IpAddressV4);
+        AddField(fields, "Subnet Mask", status.SubnetMask);
+        AddField(fields, "IPv4 Gateway", status.Gateway);
+        AddField(fields, "Gateway", status.Gateway);
+        AddField(fields, "IPv4 Primary DNS", status.PrimaryDns);
+        AddField(fields, "Primary DNS", status.PrimaryDns);
+        AddField(fields, "IPv4 Secondary DNS", status.SecondaryDns);
+        AddField(fields, "Secondary DNS", status.SecondaryDns);
+        AddField(fields, "VLAN ID", status.VlanId);
+        AddField(fields, "WAN Port Status", status.WanPortStatus);
+        AddField(fields, "PC Port Status", status.PcPortStatus);
+        AddField(fields, "Device Type", status.DeviceType);
+        AddField(fields, "Current Time", status.CurrentTime);
+        AddField(fields, "Uptime", FormatUptime(status.Uptime));
+
+        var firstAccount = status.Accounts.OrderBy(x => x.Line).FirstOrDefault();
+        if (firstAccount != null)
+        {
+            var accountText = FormatAccount(firstAccount);
+            AddField(fields, "Account 1", accountText);
+            AddField(fields, "Account", firstAccount.Number ?? accountText);
+            _phone.Account = firstAccount.Number ?? _phone.Account;
+        }
+
+        _phone.StatusFields = fields;
+        _phone.IsOnline = true;
+        _phone.LastSeen = DateTime.Now;
+
+        if (!string.IsNullOrWhiteSpace(status.Model ?? resolvedModel))
+            _phone.Model = status.Model ?? resolvedModel;
+
+        if (!string.IsNullOrWhiteSpace(status.MacAddress))
+            _phone.MacAddress = status.MacAddress;
+
+        if (!string.IsNullOrWhiteSpace(status.DeviceId))
+            _phone.SerialNumber = status.DeviceId;
+    }
+
+    private static void AddField(Dictionary<string, string> fields, string key, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+            fields[key] = value;
+    }
+
+    private static string FormatAccount(AccountStatus account)
+    {
+        var number = account.Number ?? account.Label ?? $"Account {account.Line}";
+        if (!string.IsNullOrWhiteSpace(account.Server) && !number.Contains('@'))
+            number = $"{number}@{account.Server}";
+
+        return string.IsNullOrWhiteSpace(account.Status)
+            ? number
+            : $"{number} : {account.Status}";
+    }
+
+    private static string? FormatUptime(int? totalSeconds)
+    {
+        if (!totalSeconds.HasValue)
+            return null;
+
+        var time = TimeSpan.FromSeconds(totalSeconds.Value);
+        return time.Days > 0
+            ? $"{time.Days} дни {time.Hours:00}:{time.Minutes:00}"
+            : $"{(int)time.TotalHours:00}:{time.Minutes:00}";
+    }
+
     private static string GetUsefulErrorMessage(Exception ex)
     {
         var messages = new List<string>();
@@ -490,20 +590,49 @@ else
 
     private void ApplyStatusToConfigDefaults()
     {
-        if (TryValue(out var account, "Account 1", "Account"))
-        {
-            _registrationStatus = account.Contains("Зарегистрирован", StringComparison.OrdinalIgnoreCase) ||
-                                  account.Contains("Registered", StringComparison.OrdinalIgnoreCase)
-                ? "Зарегистрирован"
-                : account;
+        if ((_phone?.ConfigFields?.Count ?? 0) > 0)
+            return;
 
+        if (_phone?.StatusFields is { Count: > 0 } fields)
+        {
+            var label = ValueFrom(fields, string.Empty, "account.info.1.label", "account.info.0.label", "data.1.label", "data.0.label");
+            var displayName = ValueFrom(fields, string.Empty, "account.info.1.displayName", "account.info.0.displayName", "data.1.displayName", "data.0.displayName");
+            var registerName = ValueFrom(fields, string.Empty, "account.info.1.registerName", "account.info.0.registerName", "data.1.registerName", "data.0.registerName");
+            var userName = ValueFrom(fields, string.Empty, "account.info.1.userName", "account.info.0.userName", "data.1.userName", "data.0.userName");
+            var sipServer = ValueFrom(fields, string.Empty, "account.info.1.sipServer", "account.info.0.sipServer", "data.1.sipServer", "data.0.sipServer");
+
+            if (!string.IsNullOrWhiteSpace(label))
+                _lineLabel = label;
+
+            if (!string.IsNullOrWhiteSpace(displayName))
+                _displayName = displayName;
+
+            if (!string.IsNullOrWhiteSpace(registerName))
+                _registerName = registerName;
+
+            if (!string.IsNullOrWhiteSpace(userName))
+                _userName = userName;
+
+            if (!string.IsNullOrWhiteSpace(sipServer))
+                _sipServer1 = sipServer;
+        }
+
+        if (TryValue(out var account, "Account 1", "Account", "Аккаунт 1", "Аккаунт"))
+        {
             var extension = ExtractAccount(account);
             if (!string.IsNullOrWhiteSpace(extension))
             {
-                _lineLabel = extension;
-                _displayName = extension;
-                _registerName = extension;
-                _userName = extension;
+                if (string.IsNullOrWhiteSpace(_lineLabel))
+                    _lineLabel = extension;
+
+                if (string.IsNullOrWhiteSpace(_displayName))
+                    _displayName = extension;
+
+                if (string.IsNullOrWhiteSpace(_registerName))
+                    _registerName = extension;
+
+                if (string.IsNullOrWhiteSpace(_userName))
+                    _userName = extension;
             }
         }
     }
@@ -525,8 +654,15 @@ else
 
         try
         {
-            var result = await StatusClient.GetAccountConfigAsync(_phone.IpAddress, creds.Value.username, creds.Value.password);
-            ApplyAccountConfig(result.Fields);
+            var fields = IsModernConfigPhone()
+                ? (await ModernApiClient.GetAccountConfigAsync(_phone.IpAddress, creds.Value.username, creds.Value.password)).Fields
+                : await LoadLegacyAccountConfigFields(creds.Value.username, creds.Value.password);
+
+            await MergeStatusFieldsForConfig(fields, creds.Value.username, creds.Value.password);
+            ApplyAccountConfig(fields);
+            SaveCurrentConfigToPhoneCache();
+            Store.Upsert(_phone);
+            await Store.SaveAsync();
             _configMessage = "Параметры аккаунта загружены из телефона. Пароль не подставляю в форму из соображений безопасности.";
         }
         catch (Exception ex)
@@ -542,45 +678,216 @@ else
 
     private void ApplyAccountConfig(Dictionary<string, string> fields)
     {
-        _lineEnabled = BoolValue(fields, true, "AccountEnable.1", "data.formData.AccountEnable.1");
-        _lineLabel = ValueFrom(fields, _lineLabel, "AccountLabel.1", "data.formData.AccountLabel.1", "data.1.label");
-        _displayName = ValueFrom(fields, _displayName, "AccountDisplayName.1", "data.formData.AccountDisplayName.1", "data.1.displayName");
-        _registerName = ValueFrom(fields, _registerName, "AccountRegisterName.1", "data.formData.AccountRegisterName.1", "data.1.registerName");
-        _userName = ValueFrom(fields, _userName, "AccountUserName.1", "data.formData.AccountUserName.1", "data.1.userName");
+        _lineEnabled = BoolValue(fields, true, "AccountEnable.1", "data.formData.AccountEnable.1", "account.1.enable");
+        _lineLabel = ValueFrom(fields, _lineLabel, "AccountLabel.1", "data.formData.AccountLabel.1", "account.1.label", "account.info.1.label", "account.info.0.label", "data.1.label", "data.0.label");
+        _displayName = ValueFrom(fields, _displayName, "AccountDisplayName.1", "data.formData.AccountDisplayName.1", "account.1.display_name", "account.info.1.displayName", "account.info.0.displayName", "data.1.displayName", "data.0.displayName");
+        _registerName = ValueFrom(fields, _registerName, "AccountRegisterName.1", "data.formData.AccountRegisterName.1", "account.1.auth_name", "account.info.1.registerName", "account.info.0.registerName", "data.1.registerName", "data.0.registerName");
+        _userName = ValueFrom(fields, _userName, "AccountUserName.1", "data.formData.AccountUserName.1", "account.1.user_name", "account.info.1.userName", "account.info.0.userName", "data.1.userName", "data.0.userName");
 
-        _sipServer1 = ValueFrom(fields, _sipServer1, "AccountServerAddr1.1", "data.formData.AccountServerAddr1.1", "AccountServerAddr.1.1", "data.formData.AccountServerAddr.1.1", "data.1.sipServer");
+        _sipServer1 = ValueFrom(fields, _sipServer1, "AccountServerAddr1.1", "data.formData.AccountServerAddr1.1", "AccountServerAddr.1.1", "data.formData.AccountServerAddr.1.1", "account.1.sip_server.1.address", "account.info.1.sipServer", "account.info.0.sipServer", "data.1.sipServer", "data.0.sipServer");
         _sipPort1 = IntValue(fields, _sipPort1, "AccountServerPort1.1", "data.formData.AccountServerPort1.1", "AccountServerPort.1.1", "data.formData.AccountServerPort.1.1");
         _transport1 = TransportValue(fields, _transport1, "AccountServerTransport1.1", "data.formData.AccountServerTransport1.1", "AccountServerTransport.1.1", "data.formData.AccountServerTransport.1.1");
-        _serverTimeout1 = IntValue(fields, _serverTimeout1, "AccountServerExpires1.1", "data.formData.AccountServerExpires1.1", "AccountServerExpires.1.1", "data.formData.AccountServerExpires.1.1");
-        _retryCount1 = IntValue(fields, _retryCount1, "AccountServerRetryCounts1.1", "data.formData.AccountServerRetryCounts1.1", "AccountServerRetryCounts.1.1", "data.formData.AccountServerRetryCounts.1.1");
+        _serverTimeout1 = IntValue(fields, _serverTimeout1, "AccountServerExpires1.1", "data.formData.AccountServerExpires1.1", "AccountServerExpires.1.1", "data.formData.AccountServerExpires.1.1", "account.1.sip_server.1.expires");
+        _retryCount1 = IntValue(fields, _retryCount1, "AccountServerRetryCounts1.1", "data.formData.AccountServerRetryCounts1.1", "AccountServerRetryCounts.1.1", "data.formData.AccountServerRetryCounts.1.1", "account.1.sip_server.1.retry_counts");
 
-        _sipServer2 = ValueFrom(fields, _sipServer2, "AccountServerAddr2.1", "data.formData.AccountServerAddr2.1", "AccountServerAddr.1.2", "data.formData.AccountServerAddr.1.2");
+        _sipServer2 = ValueFrom(fields, _sipServer2, "AccountServerAddr2.1", "data.formData.AccountServerAddr2.1", "AccountServerAddr.1.2", "data.formData.AccountServerAddr.1.2", "account.1.sip_server.2.address");
         _sipPort2 = IntValue(fields, _sipPort2, "AccountServerPort2.1", "data.formData.AccountServerPort2.1", "AccountServerPort.1.2", "data.formData.AccountServerPort.1.2");
         _transport2 = TransportValue(fields, _transport2, "AccountServerTransport2.1", "data.formData.AccountServerTransport2.1", "AccountServerTransport.1.2", "data.formData.AccountServerTransport.1.2");
-        _serverTimeout2 = IntValue(fields, _serverTimeout2, "AccountServerExpires2.1", "data.formData.AccountServerExpires2.1", "AccountServerExpires.1.2", "data.formData.AccountServerExpires.1.2");
-        _retryCount2 = IntValue(fields, _retryCount2, "AccountServerRetryCounts2.1", "data.formData.AccountServerRetryCounts2.1", "AccountServerRetryCounts.1.2", "data.formData.AccountServerRetryCounts.1.2");
+        _serverTimeout2 = IntValue(fields, _serverTimeout2, "AccountServerExpires2.1", "data.formData.AccountServerExpires2.1", "AccountServerExpires.1.2", "data.formData.AccountServerExpires.1.2", "account.1.sip_server.2.expires");
+        _retryCount2 = IntValue(fields, _retryCount2, "AccountServerRetryCounts2.1", "data.formData.AccountServerRetryCounts2.1", "AccountServerRetryCounts.1.2", "data.formData.AccountServerRetryCounts.1.2", "account.1.sip_server.2.retry_counts");
 
-        _outboundEnabled = BoolValue(fields, _outboundEnabled, "AccountOutboundSwitch.1", "data.formData.AccountOutboundSwitch.1");
-        _outboundProxy1 = ValueFrom(fields, _outboundProxy1, "AccountOutboundProxy1.1", "data.formData.AccountOutboundProxy1.1", "AccountOutboundProxy.1.1", "data.formData.AccountOutboundProxy.1.1");
-        _outboundPort1 = IntValue(fields, _outboundPort1, "AccountOutboundPort1.1", "data.formData.AccountOutboundPort1.1", "AccountOutboundPort.1.1", "data.formData.AccountOutboundPort.1.1");
-        _outboundProxy2 = ValueFrom(fields, _outboundProxy2, "AccountOutboundProxy2.1", "data.formData.AccountOutboundProxy2.1", "AccountOutboundProxy.1.2", "data.formData.AccountOutboundProxy.1.2");
-        _outboundPort2 = IntValue(fields, _outboundPort2, "AccountOutboundPort2.1", "data.formData.AccountOutboundPort2.1", "AccountOutboundPort.1.2", "data.formData.AccountOutboundPort.1.2");
-        _proxyInterval = IntValue(fields, _proxyInterval, "AccountProxyFallbackInterval.1", "data.formData.AccountProxyFallbackInterval.1");
-        _natEnabled = BoolValue(fields, _natEnabled, "AccountStunSwitch.1", "data.formData.AccountStunSwitch.1");
+        _password = string.Empty;
+        _loadedConfigValues = CurrentConfigValues();
     }
 
-    private void SaveConfig()
+    private async Task MergeStatusFieldsForConfig(Dictionary<string, string> fields, string username, string password)
+    {
+        if (_phone == null)
+            return;
+
+        try
+        {
+            if (IsModernConfigPhone())
+            {
+                var modernStatus = await ModernApiClient.GetStatusAsync(_phone.IpAddress, username, password);
+                ApplyModernStatus(modernStatus);
+            }
+            else
+            {
+                var status = await StatusClient.GetStatusAsync(_phone.IpAddress, username, password);
+                _phone.StatusFields = status.Fields;
+            }
+
+            if (_phone.StatusFields is { Count: > 0 } statusFields)
+            {
+                foreach (var item in statusFields)
+                {
+                    if (!fields.ContainsKey(item.Key) ||
+                        item.Key.Equals("Account", StringComparison.OrdinalIgnoreCase) ||
+                        item.Key.Equals("Account 1", StringComparison.OrdinalIgnoreCase))
+                    {
+                        fields[item.Key] = item.Value;
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // Status data is optional for config editing.
+        }
+    }
+
+    private async Task<Dictionary<string, string>> LoadLegacyAccountConfigFields(string username, string password)
+    {
+        if (_phone == null)
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            var result = await StatusClient.GetAccountConfigAsync(_phone.IpAddress, username, password);
+            foreach (var item in result.Fields)
+                fields[item.Key] = item.Value;
+        }
+        catch
+        {
+            // Old T3x phones do not always expose account edit fields through the JSON API.
+        }
+
+        var cfgBytes = await ConfigManager.DownloadConfigAsync(_phone.IpAddress, username, password);
+        var cfgText = System.Text.Encoding.UTF8.GetString(cfgBytes);
+        foreach (var item in ParseCfgFields(cfgText))
+            fields[item.Key] = item.Value;
+
+        return fields;
+    }
+
+    private static Dictionary<string, string> ParseCfgFields(string cfgText)
+    {
+        var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var rawLine in cfgText.Split('\n'))
+        {
+            var line = rawLine.Trim();
+            if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#') || !line.Contains('='))
+                continue;
+
+            var parts = line.Split('=', 2);
+            var key = parts[0].Trim();
+            var value = parts.Length > 1 ? parts[1].Trim() : string.Empty;
+
+            if (!string.IsNullOrWhiteSpace(key))
+                fields[key] = value;
+        }
+
+        return fields;
+    }
+
+    private async Task SaveConfig()
     {
         if (_phone == null) return;
 
-        _phone.Account = _lineLabel;
-        Store.Upsert(_phone);
-        _configMessage = "Параметры сохранены в форме. Генерацию .cfg подключим следующим шагом.";
+        var creds = Credentials.GetAdminCredentials();
+        if (creds == null)
+        {
+            _configMessage = "Требуется admin-авторизация для сохранения конфигурации.";
+            return;
+        }
+
+        var changes = BuildChangedCfgValues();
+        if (changes.Count == 0)
+        {
+            _configMessage = "Изменений нет.";
+            return;
+        }
+
+        _savingConfig = true;
+        _configMessage = "Формирование и отправка delta .cfg...";
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var generatedPath = await SaveDeltaCfgAsync(changes);
+            OperationResult result;
+
+            if (IsModernConfigPhone())
+            {
+                result = await ModernApiClient.ImportCfgAsync(_phone.IpAddress, creds.Value.username, creds.Value.password, generatedPath);
+            }
+            else
+            {
+                var upload = await ConfigManager.UploadConfigAsync(_phone.IpAddress, creds.Value.username, creds.Value.password, generatedPath);
+                result = upload.Success
+                    ? OperationResult.Ok($"CFG import выполнен. Тип: {upload.Filetype}, код: {upload.ResultCode}")
+                    : OperationResult.Fail("CFG import завершился без подтверждения успеха.", upload.RawResponse);
+            }
+
+            if (result.Success)
+            {
+                _phone.Account = _lineLabel;
+                SaveCurrentConfigToPhoneCache();
+                Store.Upsert(_phone);
+                await Store.SaveAsync();
+                _loadedConfigValues = CurrentConfigValues();
+                _configMessage = $"Изменения отправлены в телефон. Delta .cfg: {generatedPath}";
+            }
+            else
+            {
+                _configMessage = $"Ошибка сохранения: {result.Message}";
+            }
+        }
+        catch (Exception ex)
+        {
+            _configMessage = $"Ошибка сохранения: {GetUsefulErrorMessage(ex)}";
+        }
+        finally
+        {
+            _savingConfig = false;
+            await InvokeAsync(StateHasChanged);
+        }
     }
 
-    private void ExportConfig()
+    private async Task ExportConfig()
     {
-        _configMessage = $"Экспорт \"{_exportScope}\" подготовлен в UI. Скачивание .cfg подключим отдельным обработчиком.";
+        if (_phone == null) return;
+
+        var creds = Credentials.GetAdminCredentials();
+        if (creds == null)
+        {
+            _configMessage = "Требуется admin-авторизация для export CFG.";
+            return;
+        }
+
+        _exportingConfig = true;
+        _configMessage = "Экспорт конфигурационного файла...";
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var result = IsModernConfigPhone()
+                ? await ModernApiClient.ExportCfgAsync(_phone.IpAddress, creds.Value.username, creds.Value.password, "all")
+                : await ConfigManager.ExportCfgAsync(_phone.IpAddress, creds.Value.username, creds.Value.password, "all");
+
+            if (result.Success)
+            {
+                _lastExportPath = result.FilePath ?? string.Empty;
+                _configMessage = $"CFG сохранен: {_lastExportPath}";
+            }
+            else
+            {
+                _configMessage = $"Ошибка export CFG: {result.Message}";
+            }
+        }
+        catch (Exception ex)
+        {
+            _configMessage = $"Ошибка export CFG: {GetUsefulErrorMessage(ex)}";
+        }
+        finally
+        {
+            _exportingConfig = false;
+            await InvokeAsync(StateHasChanged);
+        }
     }
 
     private void OnCfgFileSelected(InputFileChangeEventArgs e)
@@ -614,15 +921,25 @@ else
                 await input.CopyToAsync(output);
             }
 
-            var result = await ConfigManager.UploadConfigAsync(
-                _phone.IpAddress,
-                creds.Value.username,
-                creds.Value.password,
-                tempPath);
+            if (IsModernConfigPhone())
+            {
+                var result = await ModernApiClient.ImportCfgAsync(_phone.IpAddress, creds.Value.username, creds.Value.password, tempPath);
+                _configMessage = result.Success
+                    ? "Импорт выполнен."
+                    : $"Импорт завершился с ошибкой: {result.Message}";
+            }
+            else
+            {
+                var result = await ConfigManager.UploadConfigAsync(
+                    _phone.IpAddress,
+                    creds.Value.username,
+                    creds.Value.password,
+                    tempPath);
 
-            _configMessage = result.Success
-                ? $"Импорт выполнен. Тип: {result.Filetype}, код: {result.ResultCode}"
-                : "Импорт завершился без подтверждения успеха.";
+                _configMessage = result.Success
+                    ? $"Импорт выполнен. Тип: {result.Filetype}, код: {result.ResultCode}"
+                    : "Импорт завершился без подтверждения успеха.";
+            }
         }
         catch (Exception ex)
         {
@@ -640,6 +957,156 @@ else
     {
         _selectedCfgFile = null;
         _configMessage = string.Empty;
+    }
+
+    private void SaveCurrentConfigToPhoneCache()
+    {
+        if (_phone == null)
+            return;
+
+        var values = CurrentConfigValues();
+        values.Remove("Password");
+        _phone.ConfigFields = values;
+    }
+
+    private void ApplyStoredConfig(Dictionary<string, string> values)
+    {
+        _lineEnabled = BoolValue(values, _lineEnabled, "LineEnabled");
+        _lineLabel = ValueFrom(values, _lineLabel, "LineLabel");
+        _displayName = ValueFrom(values, _displayName, "DisplayName");
+        _registerName = ValueFrom(values, _registerName, "RegisterName");
+        _userName = ValueFrom(values, _userName, "UserName");
+        _password = string.Empty;
+
+        _sipServer1 = ValueFrom(values, _sipServer1, "SipServer1");
+        _sipPort1 = IntValue(values, _sipPort1, "SipPort1");
+        _transport1 = StoredTransportValue(values, _transport1, "Transport1");
+        _serverTimeout1 = IntValue(values, _serverTimeout1, "ServerTimeout1");
+        _retryCount1 = IntValue(values, _retryCount1, "RetryCount1");
+
+        _sipServer2 = ValueFrom(values, _sipServer2, "SipServer2");
+        _sipPort2 = IntValue(values, _sipPort2, "SipPort2");
+        _transport2 = StoredTransportValue(values, _transport2, "Transport2");
+        _serverTimeout2 = IntValue(values, _serverTimeout2, "ServerTimeout2");
+        _retryCount2 = IntValue(values, _retryCount2, "RetryCount2");
+    }
+
+    private string DirtyMark(string key) => IsConfigChanged(key) ? "*" : string.Empty;
+
+    private bool IsConfigChanged(string key)
+    {
+        if (_loadedConfigValues.Count == 0)
+            return false;
+
+        var current = CurrentConfigValues();
+        return current.TryGetValue(key, out var currentValue) &&
+               _loadedConfigValues.TryGetValue(key, out var loadedValue) &&
+               !string.Equals(currentValue, loadedValue, StringComparison.Ordinal);
+    }
+
+    private Dictionary<string, string> CurrentConfigValues() => new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["LineEnabled"] = _lineEnabled ? "1" : "0",
+        ["LineLabel"] = NormalizeCfgValue(_lineLabel),
+        ["DisplayName"] = NormalizeCfgValue(_displayName),
+        ["RegisterName"] = NormalizeCfgValue(_registerName),
+        ["UserName"] = NormalizeCfgValue(_userName),
+        ["Password"] = NormalizeCfgValue(_password),
+        ["SipServer1"] = NormalizeCfgValue(_sipServer1),
+        ["SipPort1"] = _sipPort1.ToString(),
+        ["Transport1"] = TransportToCfgValue(_transport1),
+        ["ServerTimeout1"] = _serverTimeout1.ToString(),
+        ["RetryCount1"] = _retryCount1.ToString(),
+        ["SipServer2"] = NormalizeCfgValue(_sipServer2),
+        ["SipPort2"] = _sipPort2.ToString(),
+        ["Transport2"] = TransportToCfgValue(_transport2),
+        ["ServerTimeout2"] = _serverTimeout2.ToString(),
+        ["RetryCount2"] = _retryCount2.ToString()
+    };
+
+    private Dictionary<string, string> BuildChangedCfgValues()
+    {
+        var current = CurrentConfigValues();
+        var changes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (key, cfgKey) in ConfigToCfgKey)
+        {
+            if (!current.TryGetValue(key, out var value))
+                continue;
+
+            if (key.Equals("Password", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(value))
+                continue;
+
+            if (!_loadedConfigValues.TryGetValue(key, out var loadedValue) ||
+                !string.Equals(value, loadedValue, StringComparison.Ordinal))
+            {
+                changes[cfgKey] = value;
+            }
+        }
+
+        return changes;
+    }
+
+    private async Task<string> SaveDeltaCfgAsync(Dictionary<string, string> changes)
+    {
+        if (_phone == null)
+            throw new InvalidOperationException("Phone is not loaded.");
+
+        var dir = Path.Combine(AppContext.BaseDirectory, "generated", SafePathSegment(_phone.IpAddress));
+        Directory.CreateDirectory(dir);
+
+        var path = Path.Combine(dir, $"account-delta-{DateTime.Now:yyyyMMdd-HHmmss}.cfg");
+        var lines = new List<string> { "#!version:1.0.0.1", string.Empty };
+        lines.AddRange(changes.Select(x => $"{x.Key} = {x.Value}"));
+
+        await File.WriteAllTextAsync(path, string.Join(Environment.NewLine, lines), System.Text.Encoding.UTF8);
+        return path;
+    }
+
+    private bool IsModernConfigPhone()
+    {
+        if (_phone == null)
+            return false;
+
+        var firmware = TryValue(out var cachedFirmware, "Firmware Version", "FirmwareVersion", "Firmware")
+            ? cachedFirmware
+            : null;
+
+        var family = ModelResolver.ResolveFamily(_phone.Model, firmware);
+        return family is YealinkPhoneFamily.ModernApi or YealinkPhoneFamily.WSeries || UsesModernHttps(_phone.Model);
+    }
+
+    private static string NormalizeCfgValue(string? value) =>
+        (value ?? string.Empty).Replace("\r", " ").Replace("\n", " ").Trim();
+
+    private static string TransportToCfgValue(string? transport) =>
+        transport?.ToUpperInvariant() switch
+        {
+            "TCP" => "1",
+            "TLS" => "2",
+            _ => "0"
+        };
+
+    private static string StoredTransportValue(Dictionary<string, string> fields, string fallback, params string[] keys)
+    {
+        var value = ValueFrom(fields, string.Empty, keys);
+        return value switch
+        {
+            "0" => "UDP",
+            "1" => "TCP",
+            "2" => "TLS",
+            "" => fallback,
+            _ => value.Equals("TCP", StringComparison.OrdinalIgnoreCase) ? "TCP" : "UDP"
+        };
+    }
+
+    private static string SafePathSegment(string value)
+    {
+        var filename = value.Replace(':', '_').Replace('/', '_').Replace('\\', '_');
+        foreach (var invalid in Path.GetInvalidFileNameChars())
+            filename = filename.Replace(invalid, '_');
+
+        return string.IsNullOrWhiteSpace(filename) ? "phone" : filename;
     }
 
     private StatusRow Row(string label, params string[] keys) => new(label, Value(keys));
@@ -684,6 +1151,16 @@ else
         {
             if (fields.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
                 return value;
+        }
+
+        foreach (var key in keys)
+        {
+            var match = fields.FirstOrDefault(x =>
+                x.Key.EndsWith($".{key}", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(x.Value));
+
+            if (!string.IsNullOrWhiteSpace(match.Value))
+                return match.Value;
         }
 
         return fallback;

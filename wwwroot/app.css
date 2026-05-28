@@ -134,10 +134,19 @@ a:hover {
 .app-header {
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    gap: 16px;
     min-height: 72px;
     padding: 16px 28px;
     border-bottom: 1px solid var(--line);
     background: rgba(255, 255, 255, 0.82);
+}
+
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
 }
 
 .header-title {
@@ -675,6 +684,17 @@ a:hover {
     border-radius: var(--radius);
     color: var(--muted);
     background: #f8fafc;
+}
+
+.export-path {
+    min-width: min(620px, 100%);
+    color: var(--text);
+    overflow-wrap: anywhere;
+}
+
+.dirty-mark {
+    color: var(--warning);
+    font-weight: 800;
 }
 
 @media (max-width: 1100px) {

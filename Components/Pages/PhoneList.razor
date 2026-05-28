@@ -7,22 +7,14 @@
 @inject NavigationManager Navigation
 @inject YealinkApiClient ApiClient
 @inject YealinkStatusClient StatusClient
+@inject YealinkConfigManager ConfigManager
+@implements IDisposable
 @rendermode RenderMode.InteractiveServer
 
 <section class="page-heading">
     <div>
         <p class="eyebrow">Инвентарь</p>
         <h1>Телефоны Yealink</h1>
-    </div>
-    <div class="heading-actions">
-        @if (!Credentials.IsAdminConfigured)
-        {
-            <button class="btn primary" @onclick="ShowAdminLogin">Войти в админ-режим</button>
-        }
-        else
-        {
-            <button class="btn secondary" @onclick="AdminLogout">Выйти из админ-режима</button>
-        }
     </div>
 </section>
 
@@ -53,10 +45,19 @@
         <button class="btn" @onclick="StartScanAll" disabled="@(_scanning || !Credentials.IsAdminConfigured)">
             Обновить список
         </button>
+        <button class="btn secondary" @onclick="RebootSelected" disabled="@(!_selectedPhones.Any() || _scanning || _rebooting || !Credentials.IsAdminConfigured)">
+            @(_rebooting ? "Перезагрузка..." : "Перезагрузить")
+        </button>
         <button class="btn danger" @onclick="DeleteSelected" disabled="@(!_selectedPhones.Any() || _scanning)">
             Удалить выбранные
         </button>
     </div>
+    @*---Добавил, потому что так красивее---*@
+    <section class="manual-check">
+        <input type="text" placeholder="IP для проверки" @bind="_manualIp" />
+        <button class="btn" @onclick="CheckManualIp" disabled="@(_checkingManual || !Credentials.IsAdminConfigured)">Проверить</button>
+    </section>
+    @*---               End              ---*@
     <div class="search-box">
         <input type="search" placeholder="Поиск по IP, MAC, серийнику, модели или аккаунту" @bind="_searchText" @bind:event="oninput" />
     </div>
@@ -84,10 +85,10 @@
     <div class="alert alert-info">@_lastScanLog</div>
 }
 
-<section class="manual-check">
+@* <section class="manual-check">
     <input type="text" placeholder="IP для проверки" @bind="_manualIp" />
     <button class="btn" @onclick="CheckManualIp" disabled="@(_checkingManual || !Credentials.IsAdminConfigured)">Проверить</button>
-</section>
+</section> *@
 
 @if (!string.IsNullOrEmpty(_manualResult))
 {
@@ -152,29 +153,6 @@ else if (!_scanning)
     </section>
 }
 
-@if (_showAdminLogin)
-{
-    <div class="modal">
-        <div class="modal-content">
-            <h4>Админ-режим телефонов</h4>
-            <div class="field-stack">
-                <label>
-                    <span>Логин администратора телефона</span>
-                    <input type="text" @bind="_adminUsername" />
-                </label>
-                <label>
-                    <span>Пароль администратора телефона</span>
-                    <input type="password" @bind="_adminPassword" />
-                </label>
-            </div>
-            <div class="action-row">
-                <button class="btn primary" @onclick="AdminLogin">Включить</button>
-                <button class="btn ghost" @onclick='() => _showAdminLogin = false'>Отмена</button>
-            </div>
-        </div>
-    </div>
-}
-
 @code {
     private List<PhoneInfo> _phones = new();
     private bool _scanning;
@@ -185,14 +163,11 @@ else if (!_scanning)
     private bool _sortAscending = true;
     private HashSet<string> _selectedPhones = new();
 
-    private bool _showAdminLogin;
-    private string _adminUsername = string.Empty;
-    private string _adminPassword = string.Empty;
-
     private string _lastScanLog = string.Empty;
     private string _manualIp = string.Empty;
     private bool _checkingManual;
     private string _manualResult = string.Empty;
+    private bool _rebooting;
 
     private IEnumerable<PhoneInfo> FilteredPhones
     {
@@ -242,6 +217,7 @@ else if (!_scanning)
 
     protected override void OnInitialized()
     {
+        Credentials.Changed += OnCredentialsChanged;
         _phones = Store.All.ToList();
     }
 
@@ -290,22 +266,53 @@ else if (!_scanning)
         await Store.SaveAsync();
     }
 
-    private void ShowAdminLogin() => _showAdminLogin = true;
-
-    private void AdminLogin()
+    private async Task RebootSelected()
     {
-        if (!string.IsNullOrWhiteSpace(_adminUsername) && !string.IsNullOrWhiteSpace(_adminPassword))
+        var creds = Credentials.GetAdminCredentials();
+        if (creds == null)
         {
-            Credentials.SetAdminCredentials(_adminUsername, _adminPassword, TimeSpan.FromMinutes(30));
-            _showAdminLogin = false;
-            _phones = Store.All.ToList();
+            _lastScanLog = "Требуется админ-режим.";
+            return;
         }
-    }
 
-    private void AdminLogout()
-    {
-        Credentials.ClearAdminCredentials();
-        _phones = Store.All.ToList();
+        var selectedIps = _selectedPhones.ToList();
+        if (selectedIps.Count == 0)
+            return;
+
+        _rebooting = true;
+        _lastScanLog = $"Отправка команды reboot: {selectedIps.Count} телефонов...";
+        await InvokeAsync(StateHasChanged);
+
+        var success = 0;
+        var failed = new List<string>();
+
+        await Parallel.ForEachAsync(selectedIps, new ParallelOptions { MaxDegreeOfParallelism = 8 }, async (ip, ct) =>
+        {
+            try
+            {
+                if (await ConfigManager.RebootAsync(ip, creds.Value.username, creds.Value.password))
+                {
+                    Interlocked.Increment(ref success);
+                }
+                else
+                {
+                    lock (failed)
+                        failed.Add(ip);
+                }
+            }
+            catch
+            {
+                lock (failed)
+                    failed.Add(ip);
+            }
+        });
+
+        _rebooting = false;
+        _lastScanLog = failed.Count == 0
+            ? $"Команда reboot отправлена: {success}."
+            : $"Команда reboot отправлена: {success}. Ошибки: {failed.Count} ({string.Join(", ", failed.Take(8))}{(failed.Count > 8 ? ", ..." : "")})";
+
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task StartScanNew()
@@ -315,13 +322,17 @@ else if (!_scanning)
 
     private async Task StartScanAll()
     {
+        var cachedConfig = Store.All
+            .Where(p => (p.ConfigFields?.Count ?? 0) > 0)
+            .ToDictionary(p => p.IpAddress, p => p.ConfigFields, StringComparer.OrdinalIgnoreCase);
+
         Store.Clear();
         _phones = new();
         await InvokeAsync(StateHasChanged);
-        await ScanInternal(scanExisting: true);
+        await ScanInternal(scanExisting: true, cachedConfig);
     }
 
-    private async Task ScanInternal(bool scanExisting)
+    private async Task ScanInternal(bool scanExisting, Dictionary<string, Dictionary<string, string>>? cachedConfig = null)
     {
         _scanning = true;
         _foundCount = 0;
@@ -344,6 +355,13 @@ else if (!_scanning)
         {
             await foreach (var phone in Scanner.ScanAsync(subnets, scanExisting))
             {
+                if ((phone.ConfigFields?.Count ?? 0) == 0 &&
+                    cachedConfig != null &&
+                    cachedConfig.TryGetValue(phone.IpAddress, out var fields))
+                {
+                    phone.ConfigFields = new Dictionary<string, string>(fields, StringComparer.OrdinalIgnoreCase);
+                }
+
                 _foundCount++;
                 _phones.Add(phone);
                 await InvokeAsync(StateHasChanged);
@@ -433,6 +451,17 @@ else if (!_scanning)
 
         _checkingManual = false;
         await InvokeAsync(StateHasChanged);
+    }
+
+    private void OnCredentialsChanged()
+    {
+        _phones = Store.All.ToList();
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Credentials.Changed -= OnCredentialsChanged;
     }
 
     private class ByteArrayComparer : IComparer<byte[]>
