@@ -10,6 +10,7 @@ public class YealinkScanner(
     YealinkStatusClient statusClient,
     YealinkModernApiClient modernApiClient,
     YealinkConfigManager configManager,
+    YealinkActionUriFixer actionUriFixer,
     PhoneStore store,
     SecureCredentialStorage credentials,
     ILogger<YealinkScanner> logger)
@@ -24,7 +25,9 @@ public class YealinkScanner(
 
         var existingIps = scanExisting
             ? new HashSet<string>()
-            : new HashSet<string>(store.All.Select(p => p.IpAddress));
+            : new HashSet<string>(store.All
+                .Where(p => !p.IsForbidden)
+                .Select(p => p.IpAddress));
 
         var allIps = subnets.SelectMany(ExpandSubnet).ToList();
         var ipsToScan = scanExisting ? allIps : allIps.Where(ip => !existingIps.Contains(ip)).ToList();
@@ -41,6 +44,11 @@ public class YealinkScanner(
         }, async (ip, ct) =>
         {
             var query = await apiClient.QueryDetailedAsync(ip, creds.Value.username, creds.Value.password, ct);
+            if (query.Status == YealinkQueryStatus.Forbidden)
+            {
+                query = await TryFixActionUriAndRetryAsync(ip, creds.Value.username, creds.Value.password, query, ct);
+            }
+
             if (query.Status == YealinkQueryStatus.Unauthorized)
             {
                 Interlocked.CompareExchange(ref rejectedCredentialsIp, ip, null);
@@ -79,6 +87,36 @@ public class YealinkScanner(
             yield return phone;
 
         await store.SaveAsync();
+    }
+
+    private async Task<YealinkQueryResult> TryFixActionUriAndRetryAsync(
+        string ip,
+        string username,
+        string password,
+        YealinkQueryResult originalQuery,
+        CancellationToken ct)
+    {
+        try
+        {
+            var knownPhone = store.All.FirstOrDefault(p =>
+                p.IpAddress.Equals(ip, StringComparison.OrdinalIgnoreCase));
+            var fix = await actionUriFixer.FixAsync(ip, username, password, knownPhone, ct);
+            if (!fix.Success)
+            {
+                logger.LogInformation("Action URI auto-fix failed for {Ip}: {Message}", ip, fix.Message);
+                return originalQuery;
+            }
+
+            await Task.Delay(750, ct);
+            var retry = await apiClient.QueryDetailedAsync(ip, username, password, ct);
+            logger.LogInformation("Action URI auto-fix for {Ip}: retry returned {Status}", ip, retry.Status);
+            return retry;
+        }
+        catch (Exception ex)
+        {
+            logger.LogInformation(ex, "Action URI auto-fix failed for {Ip}", ip);
+            return originalQuery;
+        }
     }
 
     private async Task EnrichWithStatusAsync(PhoneInfo phone, string username, string password)
@@ -325,6 +363,7 @@ public class YealinkScanner(
         if (!string.IsNullOrWhiteSpace(model))
             phone.Model = model;
 
+        phone.IsForbidden = false;
         phone.IsOnline = true;
         phone.LastSeen = DateTime.UtcNow;
     }

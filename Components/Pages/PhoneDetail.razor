@@ -5,6 +5,7 @@
 @inject YealinkStatusClient StatusClient
 @inject YealinkConfigManager ConfigManager
 @inject YealinkModernApiClient ModernApiClient
+@implements IDisposable
 @rendermode RenderMode.InteractiveServer
 
 @if (_phone == null)
@@ -350,6 +351,7 @@ else
 
     protected override void OnInitialized()
     {
+        Credentials.Changed += OnCredentialsChanged;
         _phone = Store.GetByIp(Ip);
         SeedConfigFromPhone();
     }
@@ -408,6 +410,7 @@ else
                 _phone.SerialNumber = serial;
 
             ApplyStatusToConfigDefaults();
+            _phone.IsForbidden = false;
             Store.Upsert(_phone);
             _statusError = null;
             _rawHtmlPreview = result.RawHtml[..Math.Min(2000, result.RawHtml.Length)];
@@ -439,11 +442,18 @@ else
 
         try
         {
-            if (ShouldUseModernStatusClient())
+            if (ShouldUseModernStatusClient() || ShouldProbeModernStatusFirst())
             {
-                var modernStatus = await ModernApiClient.GetStatusAsync(_phone.IpAddress, creds.Value.username, creds.Value.password);
-                ApplyModernStatus(modernStatus);
-                _rawHtmlPreview = string.Join(Environment.NewLine, modernStatus.RawValues.Take(80).Select(x => $"{x.Key}: {x.Value}"));
+                try
+                {
+                    var modernStatus = await ModernApiClient.GetStatusAsync(_phone.IpAddress, creds.Value.username, creds.Value.password);
+                    ApplyModernStatus(modernStatus);
+                    _rawHtmlPreview = string.Join(Environment.NewLine, modernStatus.RawValues.Take(80).Select(x => $"{x.Key}: {x.Value}"));
+                }
+                catch when (ShouldProbeModernStatusFirst() && !ShouldUseModernStatusClient())
+                {
+                    await LoadLegacyStatusFields(creds.Value.username, creds.Value.password);
+                }
             }
             else
             {
@@ -464,6 +474,7 @@ else
             }
 
             ApplyStatusToConfigDefaults();
+            _phone.IsForbidden = false;
             Store.Upsert(_phone);
             _statusError = null;
         }
@@ -487,6 +498,38 @@ else
 
         var family = ModelResolver.ResolveFamily(_phone.Model, firmware);
         return family is YealinkPhoneFamily.ModernApi or YealinkPhoneFamily.WSeries || UsesModernHttps(_phone.Model);
+    }
+
+    private bool ShouldProbeModernStatusFirst()
+    {
+        if (_phone == null)
+            return false;
+
+        return _phone.IsForbidden ||
+               (_phone.Model ?? string.Empty).Contains("error 403", StringComparison.OrdinalIgnoreCase) ||
+               _phone.Account.Contains("Ошибка 403", StringComparison.OrdinalIgnoreCase) ||
+               _phone.Account.Contains("error 403", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task LoadLegacyStatusFields(string username, string password)
+    {
+        if (_phone == null)
+            return;
+
+        var result = await StatusClient.GetStatusAsync(_phone.IpAddress, username, password);
+        _phone.StatusFields = result.Fields;
+
+        var betterModel = ModelResolver.ResolveFromStatus(result.Fields);
+        if (!string.IsNullOrWhiteSpace(betterModel))
+            _phone.Model = betterModel;
+
+        if (_phone.MacAddress == "unknown" && TryValue(out var mac, "MAC Address", "MAC-Р°РґСЂРµСЃ"))
+            _phone.MacAddress = mac;
+
+        if (string.IsNullOrWhiteSpace(_phone.SerialNumber) && TryValue(out var serial, "Device ID", "Machine ID", "ID СѓСЃС‚СЂРѕР№СЃС‚РІР°"))
+            _phone.SerialNumber = serial;
+
+        _rawHtmlPreview = result.RawHtml[..Math.Min(2000, result.RawHtml.Length)];
     }
 
     private void ApplyModernStatus(PhoneStatus status)
@@ -1230,6 +1273,16 @@ else
          model.Contains("W70", StringComparison.OrdinalIgnoreCase));
 
     private void GoBack() => Navigation.NavigateTo("/");
+
+    private void OnCredentialsChanged()
+    {
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Credentials.Changed -= OnCredentialsChanged;
+    }
 
     private sealed record StatusSection(string Title, IReadOnlyList<StatusRow> Rows);
     private sealed record StatusRow(string Label, string Value);

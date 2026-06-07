@@ -36,6 +36,7 @@ public class YealinkApiClient
             using var client = _httpFactory.CreateClient("yealink");
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", credentials);
+            request.Headers.ConnectionClose = true;
 
             using var response = await client.SendAsync(request, ct);
 

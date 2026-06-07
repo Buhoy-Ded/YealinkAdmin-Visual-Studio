@@ -198,18 +198,47 @@ public sealed class YealinkModernApiClient
         string password,
         CancellationToken ct = default)
     {
+        try
+        {
+            var cookies = new CookieContainer();
+            using var http = CreateHttpClient(ip, cookies);
+            ApplyBrowserHeaders(http);
+
+            var session = await LoginCoreAsync(http, ip, username, password, ct);
+            var raw = await GetStatusRawForSessionAsync(http, session, ct);
+            var status = _parser.Parse(ip, raw);
+
+            status.Model ??= session.Model;
+            status.FirmwareVersion ??= session.Firmware;
+            status.MacAddress ??= session.MacAddress;
+
+            return status;
+        }
+        catch (Exception ex) when (IsTransportReset(ex))
+        {
+            _logger.LogInformation(ex, "Modern API authenticated status failed for {Ip}; trying public WUI status", ip);
+            return await GetPublicWuiStatusAsync(ip, ct);
+        }
+    }
+
+    private async Task<PhoneStatus> GetPublicWuiStatusAsync(string ip, CancellationToken ct)
+    {
         var cookies = new CookieContainer();
         using var http = CreateHttpClient(ip, cookies);
-        ApplyBrowserHeaders(http);
+        ApplyBrowserHeaders(http, closeConnection: false);
 
-        var session = await LoginCoreAsync(http, ip, username, password, ct);
-        var raw = await GetStatusRawForSessionAsync(http, session, ct);
-        var status = _parser.Parse(ip, raw);
+        using var response = await PostJsonAsync(http, $"/api/common/info?p=StatusGeneral&t={Ts()}", new
+        {
+            idlist = new[] { "wui" }
+        }, csrfToken: null, ct);
 
-        status.Model ??= session.Model;
-        status.FirmwareVersion ??= session.Firmware;
-        status.MacAddress ??= session.MacAddress;
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Public StatusGeneral failed. Status={(int)response.StatusCode}. Body={Snippet(body)}");
 
+        _ = ParseJsonDocument(body, response);
+        var status = _parser.Parse(ip, body);
+        status.IpAddress = ip;
         return status;
     }
 
@@ -363,35 +392,70 @@ public sealed class YealinkModernApiClient
             if (!autop.IsSuccessStatusCode)
                 return OperationResult.Fail($"Autop status failed. Status={(int)autop.StatusCode}. Body={Snippet(autopBody)}", autopBody);
 
-            await using var stream = File.OpenRead(path);
-            using var content = new MultipartFormDataContent();
-            content.Add(new StreamContent(stream), "CFGConfigUpload", Path.GetFileName(path));
-
-            using var request = new HttpRequestMessage(HttpMethod.Post, "/api/diagnosis/cfg/file?action=import")
+            var attempts = new[]
             {
-                Content = content
+                new ImportCfgAttempt("/api/diagnosis/cfg/file?action=import", "CFGConfigUpload"),
+                new ImportCfgAttempt($"/api/diagnosis/cfg/file?action=import&p=SettingConfig&t={Ts()}", "CFGConfigUpload"),
+                new ImportCfgAttempt("/api/diagnosis/cfg/file?action=import", "file")
             };
-            request.Headers.TryAddWithoutValidation("X-CSRFToken", session.CsrfToken);
 
-            using var response = await http.SendAsync(request, ct);
-            var body = await response.Content.ReadAsStringAsync(ct);
+            OperationResult? lastResult = null;
+            foreach (var attempt in attempts)
+            {
+                lastResult = await ImportCfgOnceAsync(http, session.CsrfToken, path, attempt, ct);
+                if (lastResult.Success)
+                    return lastResult;
 
-            if (!response.IsSuccessStatusCode)
-                return OperationResult.Fail($"Import CFG failed. Status={(int)response.StatusCode}. Body={Snippet(body)}", body);
+                _logger.LogDebug(
+                    "Modern API CFG import attempt failed for {Ip}. Url={Url}, Field={Field}, Message={Message}",
+                    ip,
+                    attempt.Url,
+                    attempt.FieldName,
+                    lastResult.Message);
+            }
 
-            using var doc = ParseJsonDocument(body, response);
-            var ret = FindString(doc.RootElement, "ret", "result");
-            if (!string.IsNullOrWhiteSpace(ret) && !ret.Equals("ok", StringComparison.OrdinalIgnoreCase))
-                return OperationResult.Fail($"Import CFG rejected by phone. Body={Snippet(body)}", body);
-
-            return OperationResult.Ok("CFG import completed.", rawResponse: body);
+            return lastResult ?? OperationResult.Fail("Import CFG failed before request was sent.");
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Modern API CFG import failed for {Ip}", ip);
+            _logger.LogDebug(ex, "Modern API CFG import failed for {Ip}", ip);
             return OperationResult.Fail($"Import CFG error: {ex.Message}");
         }
     }
+
+    private async Task<OperationResult> ImportCfgOnceAsync(
+        HttpClient http,
+        string csrfToken,
+        string path,
+        ImportCfgAttempt attempt,
+        CancellationToken ct)
+    {
+        await using var stream = File.OpenRead(path);
+        using var content = new MultipartFormDataContent();
+        using var fileContent = new StreamContent(stream);
+        content.Add(fileContent, attempt.FieldName, Path.GetFileName(path));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, attempt.Url)
+        {
+            Content = content
+        };
+        request.Headers.TryAddWithoutValidation("X-CSRFToken", csrfToken);
+
+        using var response = await http.SendAsync(request, ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+
+        if (!response.IsSuccessStatusCode)
+            return OperationResult.Fail($"Import CFG failed. Status={(int)response.StatusCode}. Body={Snippet(body)}", body);
+
+        using var doc = ParseJsonDocument(body, response);
+        var ret = FindString(doc.RootElement, "ret", "result");
+        if (!string.IsNullOrWhiteSpace(ret) && !ret.Equals("ok", StringComparison.OrdinalIgnoreCase))
+            return OperationResult.Fail($"Import CFG rejected by phone. Body={Snippet(body)}", body);
+
+        return OperationResult.Ok("CFG import completed.", rawResponse: body);
+    }
+
+    private sealed record ImportCfgAttempt(string Url, string FieldName);
 
     private async Task<ModernApiSession> LoginCoreAsync(HttpClient http, string ip, string username, string password, CancellationToken ct)
     {
@@ -437,9 +501,12 @@ public sealed class YealinkModernApiClient
         };
     }
 
-    private static void ApplyBrowserHeaders(HttpClient http)
+    private static void ApplyBrowserHeaders(HttpClient http, bool closeConnection = true)
     {
         http.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/json, text/plain, */*");
+        http.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Language", "ru,en;q=0.9");
+        http.DefaultRequestHeaders.TryAddWithoutValidation("Cache-Control", "no-cache");
+        http.DefaultRequestHeaders.ConnectionClose = closeConnection;
         http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36");
 
         if (http.BaseAddress != null)
@@ -833,5 +900,21 @@ public sealed class YealinkModernApiClient
             return string.Empty;
 
         return text[..Math.Min(text.Length, 500)];
+    }
+
+    private static bool IsTransportReset(Exception ex)
+    {
+        for (var current = ex; current != null; current = current.InnerException)
+        {
+            var message = current.Message;
+            if (message.Contains("forcibly closed", StringComparison.OrdinalIgnoreCase) ||
+                message.Contains("Удаленный хост принудительно разорвал", StringComparison.OrdinalIgnoreCase) ||
+                message.Contains("Unable to read data from the transport connection", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

@@ -363,7 +363,13 @@ else if (!_scanning)
                 }
 
                 _foundCount++;
-                _phones.Add(phone);
+                var existingIndex = _phones.FindIndex(p =>
+                    p.IpAddress.Equals(phone.IpAddress, StringComparison.OrdinalIgnoreCase));
+                if (existingIndex >= 0)
+                    _phones[existingIndex] = phone;
+                else
+                    _phones.Add(phone);
+
                 await InvokeAsync(StateHasChanged);
             }
 

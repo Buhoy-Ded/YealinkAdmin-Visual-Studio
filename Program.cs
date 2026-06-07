@@ -19,6 +19,7 @@ builder.Services.AddSingleton<YealinkConfigManager>();
 builder.Services.AddSingleton<YealinkStatusClient>();
 builder.Services.AddSingleton<YealinkModernStatusParser>();
 builder.Services.AddSingleton<YealinkModernApiClient>();
+builder.Services.AddSingleton<YealinkActionUriFixer>();
 
 builder.Services.AddHttpClient("yealink", client =>
 {

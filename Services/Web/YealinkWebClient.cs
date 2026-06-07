@@ -38,14 +38,20 @@ public class YealinkWebClient
             client.DefaultRequestHeaders.Remove("Referer");
             client.DefaultRequestHeaders.Add("Referer", url);
 
-            using var response = await client.PostAsync(url, content);
+            using var request = new HttpRequestMessage(HttpMethod.Post, url)
+            {
+                Content = content
+            };
+            request.Headers.ConnectionClose = true;
+
+            using var response = await client.SendAsync(request);
             var text = await response.Content.ReadAsStringAsync();
 
             return text.Contains("\"authstatus\":\"done\"");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Login failed for {Ip}", ip);
+            _logger.LogDebug(ex, "Legacy web login failed for {Ip}", ip);
             return false;
         }
     }
@@ -67,7 +73,10 @@ public class YealinkWebClient
         var url = $"https://{ip}/servlet?m=mod_listener&p=login&q=loginForm&Random={CreateNonce()}";
 
         using var client = _httpFactory.CreateClient("yealink-web");
-        using var response = await client.GetAsync(url);
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.ConnectionClose = true;
+
+        using var response = await client.SendAsync(request);
         var text = await response.Content.ReadAsStringAsync();
 
         var nMatch = Regex.Match(text, @"g_rsa_n\s*=\s*['""]([0-9a-fA-F]+)['""]");

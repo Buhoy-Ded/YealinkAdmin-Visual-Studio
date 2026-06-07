@@ -28,7 +28,10 @@ public class YealinkConfigManager
         var url = $"https://{ip}/servlet?m=mod_configfile&q=exportcfgconfig&type=all&Random={CreateNonce()}";
 
         using var client = _httpFactory.CreateClient("yealink-web");
-        using var response = await client.GetAsync(url);
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.ConnectionClose = true;
+
+        using var response = await client.SendAsync(request);
 
         if (response.StatusCode != System.Net.HttpStatusCode.OK ||
             (response.Content.Headers.ContentLength ?? 0) < 100)
@@ -75,7 +78,11 @@ public class YealinkConfigManager
 
         var configPage = $"https://{ip}/servlet?m=mod_data&p=settings-config&q=load";
         using var client = _httpFactory.CreateClient("yealink-web");
-        await client.GetAsync(configPage);
+        using (var loadRequest = new HttpRequestMessage(HttpMethod.Get, configPage))
+        {
+            loadRequest.Headers.ConnectionClose = true;
+            await client.SendAsync(loadRequest);
+        }
 
         var limit = filetype switch { "localcfg" => "100KB", "config" => "100KB", _ => "100KB" };
         var encryptedLimit = _webClient.RsaEncrypt(limit);
@@ -89,7 +96,13 @@ public class YealinkConfigManager
         client.DefaultRequestHeaders.Remove("Referer");
         client.DefaultRequestHeaders.Add("Referer", configPage);
 
-        using var response = await client.PostAsync(uploadUrl, content);
+        using var request = new HttpRequestMessage(HttpMethod.Post, uploadUrl)
+        {
+            Content = content
+        };
+        request.Headers.ConnectionClose = true;
+
+        using var response = await client.SendAsync(request);
         var text = await response.Content.ReadAsStringAsync();
 
         var match = Regex.Match(text, @"<div id=""_RES_INFO_"">(.*?)</div>", RegexOptions.Singleline);
@@ -115,7 +128,10 @@ public class YealinkConfigManager
         var autopUrl = $"https://{ip}/servlet?m=mod_data&p=settings-autop&q=autopnow&Rajax={CreateNonce()}";
 
         using var client = _httpFactory.CreateClient("yealink-web");
-        using var response = await client.GetAsync(autopUrl);
+        using var request = new HttpRequestMessage(HttpMethod.Get, autopUrl);
+        request.Headers.ConnectionClose = true;
+
+        using var response = await client.SendAsync(request);
         var text = await response.Content.ReadAsStringAsync();
 
         var sessionMatch = Regex.Match(text, @"""data"":""(\d+)""");
@@ -126,7 +142,10 @@ public class YealinkConfigManager
             await Task.Delay(1500);
             var checkUrl = $"https://{ip}/servlet?m=mod_data&p=settings-autop&q=askautop&sessionid={sessionId}&Rajax={CreateNonce()}";
 
-            using var checkResponse = await client.GetAsync(checkUrl);
+            using var checkRequest = new HttpRequestMessage(HttpMethod.Get, checkUrl);
+            checkRequest.Headers.ConnectionClose = true;
+
+            using var checkResponse = await client.SendAsync(checkRequest);
             text = await checkResponse.Content.ReadAsStringAsync();
 
             if (text.Contains("\"data\":0") || text.Contains("\"data\":\"0\""))
