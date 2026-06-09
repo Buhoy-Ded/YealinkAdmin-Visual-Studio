@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using YealinkAdmin.Models;
 
 namespace YealinkAdmin.Services;
 
@@ -59,6 +60,31 @@ public class YealinkStatusClient
         }
 
         throw lastError ?? new InvalidOperationException("Status API is not available");
+    }
+
+    public async Task<List<CallHistoryEntry>> GetLegacyCallHistoryAsync(string ip, string username, string password)
+    {
+        Exception? lastError = null;
+        foreach (var scheme in new[] { "https", "http" })
+        {
+            try
+            {
+                return await GetLegacyServletCallHistoryAsync(scheme, ip, username, password);
+            }
+            catch (HttpRequestException ex) when (scheme == "https" && IsSslFailure(ex))
+            {
+                _logger.LogWarning(ex, "HTTPS legacy call history request failed for {Ip}; retrying over HTTP", ip);
+                lastError = ex;
+                continue;
+            }
+            catch (Exception ex) when (scheme == "https" && ex is not UnauthorizedAccessException)
+            {
+                lastError = ex;
+                continue;
+            }
+        }
+
+        throw lastError ?? new InvalidOperationException("Legacy call history API is not available");
     }
 
     public async Task<AccountConfigResult> GetAccountConfigAsync(string ip, string username, string password)
@@ -504,6 +530,136 @@ public class YealinkStatusClient
         AddAccountStatus(result, html);
 
         return new StatusResult(result, html);
+    }
+
+    private async Task<List<CallHistoryEntry>> GetLegacyServletCallHistoryAsync(string scheme, string ip, string username, string password)
+    {
+        using var client = CreateIsolatedWebClient();
+        var baseUrl = $"{scheme}://{ip}";
+
+        var loginFormUrl = $"{baseUrl}/servlet?m=mod_listener&p=login&q=loginForm&Random={CreateNonce()}";
+        using var loginFormResponse = await client.GetAsync(loginFormUrl);
+        var text = await loginFormResponse.Content.ReadAsStringAsync();
+
+        var nMatch = Regex.Match(text, @"g_rsa_n\s*=\s*['""]([0-9a-fA-F]+)['""]");
+        var eMatch = Regex.Match(text, @"g_rsa_e\s*=\s*['""]([0-9a-fA-F]+)['""]");
+
+        if (!nMatch.Success || !eMatch.Success)
+            throw new InvalidOperationException("RSA keys not found");
+
+        using var rsa = RSA.Create();
+        rsa.ImportParameters(new RSAParameters
+        {
+            Modulus = Convert.FromHexString(nMatch.Groups[1].Value),
+            Exponent = Convert.FromHexString(eMatch.Groups[1].Value)
+        });
+
+        var encryptedPwd = Convert.ToHexString(
+            rsa.Encrypt(Encoding.UTF8.GetBytes(password), RSAEncryptionPadding.Pkcs1)
+        ).ToLowerInvariant();
+
+        var loginUrl = $"{baseUrl}/servlet?m=mod_listener&p=login&q=login&Rajax={CreateNonce()}";
+        using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["username"] = username,
+            ["pwd"] = encryptedPwd,
+            ["jumpto"] = "{\"m\":\"mod_data\",\"p\":\"contacts-callinfo\",\"q\":\"load\"}"
+        });
+
+        client.DefaultRequestHeaders.Remove("Referer");
+        client.DefaultRequestHeaders.Add("Referer", $"{baseUrl}/servlet?m=mod_listener&p=login&q=loginForm");
+
+        using var loginResponse = await client.PostAsync(loginUrl, content);
+        text = await loginResponse.Content.ReadAsStringAsync();
+
+        if (!text.Contains("\"authstatus\":\"done\""))
+            throw new UnauthorizedAccessException("Login failed");
+
+        var historyUrl = $"{baseUrl}/servlet?m=mod_data&p=contacts-callinfo&q=load";
+        using var historyResponse = await client.GetAsync(historyUrl);
+        var html = await historyResponse.Content.ReadAsStringAsync();
+
+        return ParseLegacyCallHistory(html);
+    }
+
+    private static List<CallHistoryEntry> ParseLegacyCallHistory(string html)
+    {
+        var match = Regex.Match(html, @"g_callloglist\s*=\s*g_json\.ParseJSON\(""(?<json>(?:\\.|[^""\\])*)""\)", RegexOptions.Singleline);
+        if (!match.Success)
+            return new List<CallHistoryEntry>();
+
+        var json = JsonSerializer.Deserialize<string>($"\"{match.Groups["json"].Value}\"") ?? string.Empty;
+        using var doc = JsonDocument.Parse(json);
+        var result = new List<CallHistoryEntry>();
+
+        foreach (var group in doc.RootElement.EnumerateObject())
+        {
+            if (!int.TryParse(group.Name, NumberStyles.Integer, CultureInfo.InvariantCulture, out var type))
+                continue;
+
+            if (group.Value.ValueKind != JsonValueKind.Object)
+                continue;
+
+            foreach (var item in group.Value.EnumerateObject())
+            {
+                if (item.Value.ValueKind != JsonValueKind.Object)
+                    continue;
+
+                var call = item.Value;
+                result.Add(new CallHistoryEntry
+                {
+                    Type = FormatLegacyCallType(type),
+                    LocalName = JsonString(call, "local_name"),
+                    LocalServer = JsonString(call, "local_server"),
+                    RemoteDisplay = JsonString(call, "remote_display"),
+                    RemoteName = JsonString(call, "remote_name"),
+                    RemoteServer = JsonString(call, "remote_server"),
+                    DateTimeText = FormatCallDateTime(JsonString(call, "born_tick_datetime")),
+                    Duration = FormatCallDuration(JsonString(call, "duration")),
+                    NumberOfTimes = JsonString(call, "number_of_times")
+                });
+            }
+        }
+
+        return result
+            .OrderByDescending(x => x.DateTimeText, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string JsonString(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) ? value.ToString() : string.Empty;
+
+    private static string FormatLegacyCallType(int type) => type switch
+    {
+        1 => "Исходящий",
+        2 => "Пропущенный",
+        3 => "Принятый",
+        4 => "Переадресованный",
+        _ => type.ToString(CultureInfo.InvariantCulture)
+    };
+
+    private static string FormatCallDateTime(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        return DateTime.TryParseExact(value.Trim(), "yyyy.MM.dd_HH.mm.ss", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
+            ? parsed.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
+            : value.Trim();
+    }
+
+    private static string FormatCallDuration(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        if (TimeSpan.TryParse(value.Trim(), CultureInfo.InvariantCulture, out var time))
+            return time.ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
+
+        if (int.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds))
+            return TimeSpan.FromSeconds(seconds).ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
+
+        return value.Trim();
     }
 
     private static Dictionary<string, string> ParseStatusFields(string html)

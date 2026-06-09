@@ -1,0 +1,124 @@
+@inject AppAuthService AppAuth
+@inject AppLocationStore LocationStore
+@implements IDisposable
+@rendermode RenderMode.InteractiveServer
+
+<section class="sidebar-auth">
+    <div class="sidebar-auth-title">Авторизация</div>
+
+    @if (AppAuth.IsAuthenticated && AppAuth.CurrentUser is { } user)
+    {
+        <label class="sidebar-location-picker">
+            <span>Локация</span>
+            <select value="@user.LocationId" @onchange="OnLocationChanged">
+                @foreach (var location in LocationStore.Enabled)
+                {
+                    <option value="@location.Id">@location.Name</option>
+                }
+            </select>
+        </label>
+        <div class="sidebar-auth-user">
+            <span>Пользователь</span>
+            <strong>@user.DisplayName</strong>
+            <small>Сессия до @user.ExpiresAtUtc.ToLocalTime().ToString("HH:mm")</small>
+        </div>
+        <button class="sidebar-auth-button" @onclick="Logout">Выйти</button>
+    }
+    else if (_showLogin)
+    {
+        <div class="sidebar-auth-form">
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <div class="sidebar-auth-error">@_error</div>
+            }
+
+            <label>
+                <span>Логин</span>
+                <input type="text" @bind="_username" autocomplete="username" />
+            </label>
+            <label>
+                <span>Пароль</span>
+                <input type="password" @bind="_password" autocomplete="current-password" @onkeydown="OnPasswordKeyDown" />
+            </label>
+            <div class="sidebar-auth-actions">
+                <button class="sidebar-auth-button primary" @onclick="Login">Войти</button>
+                <button class="sidebar-auth-button" @onclick="Cancel">Отмена</button>
+            </div>
+        </div>
+    }
+    else
+    {
+        <button class="sidebar-auth-button primary" @onclick="ShowLogin">Войти</button>
+    }
+</section>
+
+@code {
+    private bool _showLogin;
+    private string _username = string.Empty;
+    private string _password = string.Empty;
+    private string _error = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        AppAuth.Changed += OnAuthChanged;
+        LocationStore.Changed += OnAuthChanged;
+    }
+
+    private void ShowLogin()
+    {
+        _showLogin = true;
+        _error = string.Empty;
+    }
+
+    private void Login()
+    {
+        var result = AppAuth.Login(_username, _password);
+        if (!result.Success)
+        {
+            _error = result.Message;
+            return;
+        }
+
+        _showLogin = false;
+        _password = string.Empty;
+        _error = string.Empty;
+    }
+
+    private void Logout()
+    {
+        AppAuth.Logout();
+        _password = string.Empty;
+        _error = string.Empty;
+    }
+
+    private void OnLocationChanged(ChangeEventArgs e)
+    {
+        var locationId = e.Value?.ToString();
+        if (!string.IsNullOrWhiteSpace(locationId))
+            AppAuth.SetLocation(locationId);
+    }
+
+    private void Cancel()
+    {
+        _showLogin = false;
+        _password = string.Empty;
+        _error = string.Empty;
+    }
+
+    private void OnPasswordKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Enter")
+            Login();
+    }
+
+    private void OnAuthChanged()
+    {
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        AppAuth.Changed -= OnAuthChanged;
+        LocationStore.Changed -= OnAuthChanged;
+    }
+}

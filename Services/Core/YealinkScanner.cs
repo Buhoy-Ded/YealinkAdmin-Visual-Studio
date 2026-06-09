@@ -1,6 +1,7 @@
 ﻿using System.Collections.Concurrent;
 using System.Net;
 using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 using YealinkAdmin.Models;
 
 namespace YealinkAdmin.Services;
@@ -34,57 +35,78 @@ public class YealinkScanner(
 
         logger.LogInformation("Scanning {Count} of {Total} addresses...", ipsToScan.Count, allIps.Count);
 
-        var results = new ConcurrentBag<PhoneInfo>();
+        var foundCount = 0;
         string? rejectedCredentialsIp = null;
-
-        await Parallel.ForEachAsync(ipsToScan, new ParallelOptions
+        var channel = Channel.CreateUnbounded<PhoneInfo>(new UnboundedChannelOptions
         {
-            MaxDegreeOfParallelism = 30,
-            CancellationToken = ct
-        }, async (ip, ct) =>
-        {
-            var query = await apiClient.QueryDetailedAsync(ip, creds.Value.username, creds.Value.password, ct);
-            if (query.Status == YealinkQueryStatus.Forbidden)
-            {
-                query = await TryFixActionUriAndRetryAsync(ip, creds.Value.username, creds.Value.password, query, ct);
-            }
-
-            if (query.Status == YealinkQueryStatus.Unauthorized)
-            {
-                Interlocked.CompareExchange(ref rejectedCredentialsIp, ip, null);
-                return;
-            }
-
-            if (query.Status == YealinkQueryStatus.NoResponse)
-                return;
-
-            var phone = query.Status == YealinkQueryStatus.Unsupported
-                ? await CreateFromStatusAsync(ip, creds.Value.username, creds.Value.password)
-                : YealinkParser.Parse(
-                    ip,
-                    query.Status == YealinkQueryStatus.Forbidden ? "__FORBIDDEN__" : query.Content ?? string.Empty);
-
-            if (phone == null && query.Status == YealinkQueryStatus.Ok)
-                phone = await CreateFromStatusAsync(ip, creds.Value.username, creds.Value.password);
-
-            if (phone != null)
-            {
-                if (!phone.IsForbidden)
-                {
-                    await EnrichWithStatusAsync(phone, creds.Value.username, creds.Value.password);
-                    await EnrichWithConfigAsync(phone, creds.Value.username, creds.Value.password);
-                }
-
-                store.Upsert(phone);
-                results.Add(phone);
-            }
+            SingleReader = true,
+            SingleWriter = false
         });
 
-        if (results.IsEmpty && rejectedCredentialsIp != null)
-            throw new UnauthorizedAccessException($"Телефон {rejectedCredentialsIp} отклонил admin-креды. Проверьте логин и пароль.");
+        var producer = Task.Run(async () =>
+        {
+            try
+            {
+                await Parallel.ForEachAsync(ipsToScan, new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = 30,
+                    CancellationToken = ct
+                }, async (ip, ct) =>
+                {
+                    var query = await apiClient.QueryDetailedAsync(ip, creds.Value.username, creds.Value.password, ct);
+                    if (query.Status == YealinkQueryStatus.Forbidden)
+                    {
+                        query = await TryFixActionUriAndRetryAsync(ip, creds.Value.username, creds.Value.password, query, ct);
+                    }
 
-        foreach (var phone in results.OrderBy(p => p.IpAddress))
+                    if (query.Status == YealinkQueryStatus.Unauthorized)
+                    {
+                        Interlocked.CompareExchange(ref rejectedCredentialsIp, ip, null);
+                        return;
+                    }
+
+                    if (query.Status == YealinkQueryStatus.NoResponse)
+                        return;
+
+                    var phone = query.Status == YealinkQueryStatus.Unsupported
+                        ? await CreateFromStatusAsync(ip, creds.Value.username, creds.Value.password)
+                        : YealinkParser.Parse(
+                            ip,
+                            query.Status == YealinkQueryStatus.Forbidden ? "__FORBIDDEN__" : query.Content ?? string.Empty);
+
+                    if (phone == null && query.Status == YealinkQueryStatus.Ok)
+                        phone = await CreateFromStatusAsync(ip, creds.Value.username, creds.Value.password);
+
+                    if (phone != null)
+                    {
+                        if (!phone.IsForbidden)
+                        {
+                            await EnrichWithStatusAsync(phone, creds.Value.username, creds.Value.password);
+                            await EnrichWithConfigAsync(phone, creds.Value.username, creds.Value.password);
+                            await EnrichWithExpansionPanelAsync(phone, creds.Value.username, creds.Value.password);
+                        }
+
+                        store.Upsert(phone);
+                        Interlocked.Increment(ref foundCount);
+                        await channel.Writer.WriteAsync(phone, ct);
+                    }
+                });
+
+                channel.Writer.TryComplete();
+            }
+            catch (Exception ex)
+            {
+                channel.Writer.TryComplete(ex);
+            }
+        }, ct);
+
+        await foreach (var phone in channel.Reader.ReadAllAsync(ct))
             yield return phone;
+
+        await producer;
+
+        if (foundCount == 0 && rejectedCredentialsIp != null)
+            throw new UnauthorizedAccessException($"Телефон {rejectedCredentialsIp} отклонил admin-креды. Проверьте логин и пароль.");
 
         await store.SaveAsync();
     }
@@ -154,11 +176,14 @@ public class YealinkScanner(
                 }
             }
 
+            SyncAccountsFromConfigFields(phone, fields);
+
             var config = CreateConfigFields(fields, phone.Account);
             if (config.Count == 0)
                 return;
 
             phone.ConfigFields = config;
+            SaveAccountConfigFields(phone, fields);
 
             var label = FirstValue(config, "LineLabel");
             if (!string.IsNullOrWhiteSpace(label))
@@ -167,6 +192,22 @@ public class YealinkScanner(
         catch (Exception ex)
         {
             logger.LogDebug(ex, "Config enrichment failed for {Ip}", phone.IpAddress);
+        }
+    }
+
+    private async Task EnrichWithExpansionPanelAsync(PhoneInfo phone, string username, string password)
+    {
+        if (!ShouldUseModernApi(phone))
+            return;
+
+        try
+        {
+            var panel = await modernApiClient.GetExpansionPanelAsync(phone.IpAddress, username, password);
+            ApplyExpansionPanel(phone, panel);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Expansion panel enrichment failed for {Ip}", phone.IpAddress);
         }
     }
 
@@ -210,6 +251,7 @@ public class YealinkScanner(
             };
 
             ApplyStatus(phone, fields);
+            SyncAccountsFromStatus(phone, status.Accounts);
             return phone;
         }
         catch (UnauthorizedAccessException ex)
@@ -310,11 +352,13 @@ public class YealinkScanner(
         AddField(fields, "Current Time", status.CurrentTime);
         AddField(fields, "Uptime", FormatUptime(status.Uptime));
 
+        foreach (var account in status.Accounts.OrderBy(x => x.Line))
+            AddField(fields, $"Account {account.Line}", FormatAccount(account));
+
         var firstAccount = status.Accounts.OrderBy(x => x.Line).FirstOrDefault();
         if (firstAccount != null)
         {
             var accountText = FormatAccount(firstAccount);
-            AddField(fields, "Account 1", accountText);
             AddField(fields, "Account", firstAccount.Number ?? accountText);
         }
 
@@ -336,6 +380,38 @@ public class YealinkScanner(
         return string.IsNullOrWhiteSpace(account.Status)
             ? number
             : $"{number} : {account.Status}";
+    }
+
+    private static void SyncAccountsFromStatus(PhoneInfo phone, IEnumerable<AccountStatus> accounts)
+    {
+        foreach (var account in accounts)
+        {
+            var line = account.Line <= 0 ? 1 : account.Line;
+            var target = phone.Accounts.FirstOrDefault(x => x.Line == line);
+            if (target == null)
+            {
+                target = new PhoneAccountInfo { Line = line };
+                phone.Accounts.Add(target);
+            }
+
+            target.Label = account.Label ?? target.Label;
+            target.DisplayName = account.Label ?? target.DisplayName;
+            target.RegisterName = account.Number ?? target.RegisterName;
+            target.UserName = account.Number ?? target.UserName;
+            target.SipServer1 = account.Server ?? target.SipServer1;
+            target.IsDefault = account.IsDefault;
+        }
+
+        phone.Accounts = phone.Accounts.OrderBy(x => x.Line).ToList();
+        phone.DefaultAccountLine ??= phone.Accounts.FirstOrDefault(x => x.IsDefault)?.Line;
+    }
+
+    private static void ApplyExpansionPanel(PhoneInfo phone, ExpansionPanelInfo panel)
+    {
+        phone.HasExpansionPanel = panel.IsDetected;
+        phone.ExpansionPanelCount = panel.Count;
+        phone.ExpansionPanelType = panel.Type;
+        phone.ExpansionKeys = panel.Keys.OrderBy(x => x.Index).ToList();
     }
 
     private static string? FormatUptime(int? totalSeconds)
@@ -398,6 +474,116 @@ public class YealinkScanner(
         }
 
         return config;
+    }
+
+    private static void SyncAccountsFromConfigFields(PhoneInfo phone, Dictionary<string, string> fields)
+    {
+        var maxLine = Math.Min(DetectMaxAccountLine(fields), 16);
+        for (var line = 1; line <= maxLine; line++)
+        {
+            if (!HasAccountData(fields, line))
+                continue;
+
+            var account = phone.Accounts.FirstOrDefault(x => x.Line == line);
+            if (account == null)
+            {
+                account = new PhoneAccountInfo { Line = line };
+                phone.Accounts.Add(account);
+            }
+
+            account.Enabled = BoolValue(fields, true, AccountKeys(line, "enable"));
+            account.Label = ValueFrom(fields, account.Label, AccountKeys(line, "label"));
+            account.DisplayName = ValueFrom(fields, account.DisplayName, AccountKeys(line, "display"));
+            account.RegisterName = ValueFrom(fields, account.RegisterName, AccountKeys(line, "register"));
+            account.UserName = ValueFrom(fields, account.UserName, AccountKeys(line, "user"));
+            account.SipServer1 = ValueFrom(fields, account.SipServer1, AccountKeys(line, "server1"));
+        }
+
+        phone.Accounts = phone.Accounts.OrderBy(x => x.Line).ToList();
+    }
+
+    private static void SaveAccountConfigFields(PhoneInfo phone, Dictionary<string, string> fields)
+    {
+        var maxLine = Math.Min(DetectMaxAccountLine(fields), 16);
+        for (var line = 1; line <= maxLine; line++)
+        {
+            if (!HasAccountData(fields, line))
+                continue;
+
+            var values = CreateConfigFieldsForLine(fields, line);
+            var prefix = line <= 1 ? "Line1." : $"Line{line}.";
+
+            foreach (var item in values)
+            {
+                phone.ConfigFields[$"{prefix}{item.Key}"] = item.Value;
+                if (line == 1)
+                    phone.ConfigFields[item.Key] = item.Value;
+            }
+        }
+    }
+
+    private static Dictionary<string, string> CreateConfigFieldsForLine(Dictionary<string, string> fields, int line) => new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["LineEnabled"] = BoolValue(fields, true, AccountKeys(line, "enable")) ? "1" : "0",
+        ["LineLabel"] = ValueFrom(fields, string.Empty, AccountKeys(line, "label")),
+        ["DisplayName"] = ValueFrom(fields, string.Empty, AccountKeys(line, "display")),
+        ["RegisterName"] = ValueFrom(fields, string.Empty, AccountKeys(line, "register")),
+        ["UserName"] = ValueFrom(fields, string.Empty, AccountKeys(line, "user")),
+        ["SipServer1"] = ValueFrom(fields, "10.6.10.10", AccountKeys(line, "server1")),
+        ["SipPort1"] = ValueFrom(fields, "5060", AccountKeys(line, "port1")),
+        ["Transport1"] = TransportToCfgValue(ValueFrom(fields, "0", AccountKeys(line, "transport1"))),
+        ["ServerTimeout1"] = ValueFrom(fields, "3600", AccountKeys(line, "expires1")),
+        ["RetryCount1"] = ValueFrom(fields, "3", AccountKeys(line, "retry1")),
+        ["SipServer2"] = ValueFrom(fields, string.Empty, AccountKeys(line, "server2")),
+        ["SipPort2"] = ValueFrom(fields, "5060", AccountKeys(line, "port2")),
+        ["Transport2"] = TransportToCfgValue(ValueFrom(fields, "0", AccountKeys(line, "transport2"))),
+        ["ServerTimeout2"] = ValueFrom(fields, "3600", AccountKeys(line, "expires2")),
+        ["RetryCount2"] = ValueFrom(fields, "3", AccountKeys(line, "retry2"))
+    };
+
+    private static int DetectMaxAccountLine(Dictionary<string, string> fields)
+    {
+        var max = 1;
+        foreach (var key in fields.Keys)
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(key, @"(?:Account\w*\.|account\.|Line)(\d+)");
+            if (match.Success && int.TryParse(match.Groups[1].Value, out var line))
+                max = Math.Max(max, line);
+        }
+
+        return max;
+    }
+
+    private static bool HasAccountData(Dictionary<string, string> fields, int line) =>
+        AccountKeys(line, "label")
+            .Concat(AccountKeys(line, "display"))
+            .Concat(AccountKeys(line, "register"))
+            .Concat(AccountKeys(line, "user"))
+            .Concat(AccountKeys(line, "server1"))
+            .Any(key => fields.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value));
+
+    private static string[] AccountKeys(int line, string field)
+    {
+        var index = line - 1;
+        return field switch
+        {
+            "enable" => [$"AccountEnable.{line}", $"data.formData.AccountEnable.{line}", $"account.{line}.enable"],
+            "label" => [$"AccountLabel.{line}", $"data.formData.AccountLabel.{line}", $"account.{line}.label", $"account.info.{line}.label", $"account.info.{index}.label", $"data.{line}.label", $"data.{index}.label"],
+            "display" => [$"AccountDisplayName.{line}", $"data.formData.AccountDisplayName.{line}", $"account.{line}.display_name", $"account.info.{line}.displayName", $"account.info.{index}.displayName", $"data.{line}.displayName", $"data.{index}.displayName"],
+            "register" => [$"AccountRegisterName.{line}", $"data.formData.AccountRegisterName.{line}", $"account.{line}.auth_name", $"account.info.{line}.registerName", $"account.info.{index}.registerName", $"data.{line}.registerName", $"data.{index}.registerName"],
+            "user" => [$"AccountUserName.{line}", $"data.formData.AccountUserName.{line}", $"account.{line}.user_name", $"account.info.{line}.userName", $"account.info.{index}.userName", $"data.{line}.userName", $"data.{index}.userName"],
+            "server1" => [$"AccountServerAddr1.{line}", $"data.formData.AccountServerAddr1.{line}", $"AccountServerAddr.{line}.1", $"data.formData.AccountServerAddr.{line}.1", $"account.{line}.sip_server.1.address", $"account.info.{line}.sipServer", $"account.info.{index}.sipServer", $"data.{line}.sipServer", $"data.{index}.sipServer"],
+            "port1" => [$"AccountServerPort1.{line}", $"data.formData.AccountServerPort1.{line}", $"AccountServerPort.{line}.1", $"data.formData.AccountServerPort.{line}.1", $"account.{line}.sip_server.1.port"],
+            "transport1" => [$"AccountServerTransport1.{line}", $"data.formData.AccountServerTransport1.{line}", $"AccountServerTransport.{line}.1", $"data.formData.AccountServerTransport.{line}.1", $"account.{line}.sip_server.1.transport_type"],
+            "expires1" => [$"AccountServerExpires1.{line}", $"data.formData.AccountServerExpires1.{line}", $"AccountServerExpires.{line}.1", $"data.formData.AccountServerExpires.{line}.1", $"account.{line}.sip_server.1.expires"],
+            "retry1" => [$"AccountServerRetryCounts1.{line}", $"data.formData.AccountServerRetryCounts1.{line}", $"AccountServerRetryCounts.{line}.1", $"data.formData.AccountServerRetryCounts.{line}.1", $"account.{line}.sip_server.1.retry_counts"],
+            "server2" => [$"AccountServerAddr2.{line}", $"data.formData.AccountServerAddr2.{line}", $"AccountServerAddr.{line}.2", $"data.formData.AccountServerAddr.{line}.2", $"account.{line}.sip_server.2.address"],
+            "port2" => [$"AccountServerPort2.{line}", $"data.formData.AccountServerPort2.{line}", $"AccountServerPort.{line}.2", $"data.formData.AccountServerPort.{line}.2", $"account.{line}.sip_server.2.port"],
+            "transport2" => [$"AccountServerTransport2.{line}", $"data.formData.AccountServerTransport2.{line}", $"AccountServerTransport.{line}.2", $"data.formData.AccountServerTransport.{line}.2", $"account.{line}.sip_server.2.transport_type"],
+            "expires2" => [$"AccountServerExpires2.{line}", $"data.formData.AccountServerExpires2.{line}", $"AccountServerExpires.{line}.2", $"data.formData.AccountServerExpires.{line}.2", $"account.{line}.sip_server.2.expires"],
+            "retry2" => [$"AccountServerRetryCounts2.{line}", $"data.formData.AccountServerRetryCounts2.{line}", $"AccountServerRetryCounts.{line}.2", $"data.formData.AccountServerRetryCounts.{line}.2", $"account.{line}.sip_server.2.retry_counts"],
+            _ => []
+        };
     }
 
     private static Dictionary<string, string> ParseCfgFields(string cfgText)
@@ -493,10 +679,16 @@ public class YealinkScanner(
         if (parts.Length != 2 || !IPAddress.TryParse(parts[0], out var baseIp))
             throw new ArgumentException($"Invalid CIDR: {cidr}");
 
-        if (!int.TryParse(parts[1], out var prefix) || prefix < 16 || prefix > 30)
-            throw new ArgumentException($"Invalid prefix: {prefix}. Supported: /16-/30");
+        if (!int.TryParse(parts[1], out var prefix) || prefix < 16 || prefix > 32)
+            throw new ArgumentException($"Invalid prefix: {prefix}. Supported: /16-/32");
 
         var bytes = baseIp.GetAddressBytes();
+        if (prefix == 32)
+        {
+            yield return baseIp.ToString();
+            yield break;
+        }
+
         var hostBits = 32 - prefix;
         var count = (1 << hostBits) - 2;
 

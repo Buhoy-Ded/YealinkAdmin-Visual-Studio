@@ -5,9 +5,12 @@
 @inject YealinkStatusClient StatusClient
 @inject YealinkConfigManager ConfigManager
 @inject YealinkModernApiClient ModernApiClient
+@inject AppAuthService AppAuth
+@inject AuditLogStore AuditLog
 @implements IDisposable
 @rendermode RenderMode.InteractiveServer
 
+<AppAuthRequired>
 @if (_phone == null)
 {
     <section class="empty-state">
@@ -50,11 +53,11 @@ else
             <span>Состояние</span>
             @if (_phone.IsForbidden)
             {
-                <strong class="text-warning">Нужен Action URI</strong>
+                <strong class="text-warning">@(_phone.IsOnline ? "Онлайн / Action URI" : "Оффлайн / Action URI")</strong>
             }
             else
             {
-                <strong>@(_phone.IsOnline ? "Онлайн" : "Из кэша")</strong>
+                <strong>@(_phone.IsOnline ? "Онлайн" : "Оффлайн")</strong>
             }
         </div>
     </section>
@@ -69,6 +72,14 @@ else
     <div class="tabs">
         <button class="@(_activeTab == "status" ? "active" : "")" @onclick='() => _activeTab = "status"'>Status</button>
         <button class="@(_activeTab == "config" ? "active" : "")" @onclick='() => _activeTab = "config"'>Config</button>
+        @if (_phone.HasExpansionPanel)
+        {
+            <button class="@(_activeTab == "expansion" ? "active" : "")" @onclick='() => _activeTab = "expansion"'>Панель расширения</button>
+        }
+        @if (IsCallHistorySupported())
+        {
+            <button class="@(_activeTab == "history" ? "active" : "")" @onclick='() => _activeTab = "history"'>История звонков</button>
+        }
     </div>
 
     @if (_activeTab == "status")
@@ -129,6 +140,9 @@ else
                     <button class="btn primary" @onclick="SaveConfig" disabled="@(_savingConfig || !Credentials.IsAdminConfigured)">
                         @(_savingConfig ? "Сохранение..." : "Сохранить")
                     </button>
+                    <button class="btn danger" @onclick="ClearSelectedAccount" disabled="@(_savingConfig || !Credentials.IsAdminConfigured)">
+                        Очистить аккаунт
+                    </button>
                 </div>
             </div>
 
@@ -137,6 +151,31 @@ else
                 <div class="alert alert-warning">
                     Action URI отключён. Импорт готового .cfg может быть надёжнее, чем управление через web API.
                 </div>
+            }
+
+            @if (ShowAccountSelector)
+            {
+                <section class="account-selector">
+                    <label>
+                        <span>Аккаунт</span>
+                        <select value="@_selectedAccountLine" @onchange="OnAccountLineChanged">
+                            @foreach (var line in AccountLineOptions)
+                            {
+                                <option value="@line">@AccountLineTitle(line)</option>
+                            }
+                        </select>
+                    </label>
+                    <div class="account-selector-meta">
+                        @if (_phone.DefaultAccountLine.HasValue)
+                        {
+                            <span>По умолчанию: аккаунт @_phone.DefaultAccountLine.Value</span>
+                        }
+                        else
+                        {
+                            <span>По умолчанию: первый активный аккаунт</span>
+                        }
+                    </div>
+                </section>
             }
 
             <div class="config-layout">
@@ -258,7 +297,212 @@ else
             </section>
         </section>
     }
+    else if (_activeTab == "expansion" && _phone.HasExpansionPanel)
+    {
+        <section class="detail-panel">
+            <div class="panel-title-row">
+                <div>
+                    <h2>Панель расширения @DisplayValue(_phone.ExpansionPanelType)</h2>
+                    <p>Три страницы по 20 клавиш: слева нечётные, справа чётные.</p>
+                </div>
+                <div class="action-row">
+                    <button class="btn" @onclick="LoadExpansionPanel" disabled="@(_loadingExpansionPanel || !Credentials.IsAdminConfigured)">
+                        @(_loadingExpansionPanel ? "Загрузка..." : "Обновить")
+                    </button>
+                    <button class="btn primary" @onclick="SaveExpansionPanel" disabled="@(_savingExpansionPanel || !Credentials.IsAdminConfigured)">
+                        @(_savingExpansionPanel ? "Сохранение..." : "Сохранить")
+                    </button>
+                </div>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(_expansionPanelMessage))
+            {
+                <div class="alert alert-info">@_expansionPanelMessage</div>
+            }
+
+            <div class="exp-page-tabs">
+                @for (var page = 1; page <= 3; page++)
+                {
+                    var currentPage = page;
+                    <button class="@(_selectedExpansionPage == currentPage ? "active" : "")" @onclick="() => SelectExpansionPage(currentPage)">
+                        @currentPage
+                    </button>
+                }
+            </div>
+
+            <div class="exp-page-grid">
+                <section class="exp-column">
+                    @foreach (var key in ExpansionPageKeys(odd: true))
+                    {
+                        <div class="exp-key-card">
+                            <strong>@key.Index</strong>
+                            <label>
+                                <span>Номер</span>
+                                <input type="text" @bind="key.Value" />
+                            </label>
+                            <label>
+                                <span>Метка</span>
+                                <input type="text" @bind="key.Label" />
+                            </label>
+                        </div>
+                    }
+                </section>
+
+                <section class="exp-column">
+                    @foreach (var key in ExpansionPageKeys(odd: false))
+                    {
+                        <div class="exp-key-card">
+                            <strong>@key.Index</strong>
+                            <label>
+                                <span>Номер</span>
+                                <input type="text" @bind="key.Value" />
+                            </label>
+                            <label>
+                                <span>Метка</span>
+                                <input type="text" @bind="key.Label" />
+                            </label>
+                        </div>
+                    }
+                </section>
+            </div>
+
+            <details class="debug-details">
+                <summary>Все клавиши панели</summary>
+                <div class="table-wrap">
+                    <table class="phone-table expansion-table">
+                        <thead>
+                            <tr>
+                                <th>Клавиша</th>
+                                <th>Тип</th>
+                                <th>Линия</th>
+                                <th>Значение</th>
+                                <th>Метка</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var key in _phone.ExpansionKeys.OrderBy(x => x.Index))
+                            {
+                                <tr>
+                                    <td>@(string.IsNullOrWhiteSpace(key.KeyName) ? $"Key{key.Index}" : key.KeyName)</td>
+                                    <td>@DisplayValue(key.Type)</td>
+                                    <td>@DisplayValue(key.Line)</td>
+                                    <td>@DisplayValue(key.Value)</td>
+                                    <td>@DisplayValue(key.Label)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </details>
+        </section>
+    }
+    else if (_activeTab == "history" && IsCallHistorySupported())
+    {
+        <section class="detail-panel">
+            <div class="panel-title-row">
+                <div>
+                    <h2>История звонков</h2>
+                    <p>Последние вызовы, которые отдаёт сам телефон.</p>
+                </div>
+                <button class="btn primary" @onclick="LoadCallHistory" disabled="@(_loadingCallHistory || !Credentials.IsAdminConfigured)">
+                    @(_loadingCallHistory ? "Загрузка..." : "Обновить")
+                </button>
+            </div>
+
+            @if (!Credentials.IsAdminConfigured)
+            {
+                <div class="alert alert-info">Для загрузки истории звонков нужен админ-режим.</div>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(_callHistoryMessage))
+            {
+                <div class="alert alert-info">@_callHistoryMessage</div>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(_callHistoryError))
+            {
+                <div class="alert alert-danger">@_callHistoryError</div>
+            }
+
+            @if (_callHistory.Count > 0)
+            {
+                <div class="call-history-summary">
+                    <div>
+                        <span>Всего</span>
+                        <strong>@_callHistory.Count</strong>
+                    </div>
+                    <div>
+                        <span>Исходящие</span>
+                        <strong>@CountCalls("Исходящий")</strong>
+                    </div>
+                    <div>
+                        <span>Принятые</span>
+                        <strong>@CountCalls("Принятый")</strong>
+                    </div>
+                    <div>
+                        <span>Пропущенные</span>
+                        <strong>@CountCalls("Пропущенный")</strong>
+                    </div>
+                </div>
+
+                <div class="call-history-toolbar">
+                    <label>
+                        <span>Поиск</span>
+                        <input type="search" @bind="_callHistorySearch" @bind:event="oninput" placeholder="Номер, имя, сервер, тип..." />
+                    </label>
+                    <div class="call-history-count">
+                        Показано: @FilteredCallHistory.Count() из @_callHistory.Count
+                    </div>
+                </div>
+
+                <div class="table-wrap">
+                    <table class="phone-table call-history-table">
+                        <thead>
+                            <tr>
+                                <th><button type="button" @onclick='() => SortCallHistory("type")'>Тип @SortIcon("type")</button></th>
+                                <th><button type="button" @onclick='() => SortCallHistory("datetime")'>Дата и время @SortIcon("datetime")</button></th>
+                                <th><button type="button" @onclick='() => SortCallHistory("local")'>Локальный @SortIcon("local")</button></th>
+                                <th><button type="button" @onclick='() => SortCallHistory("remote")'>Абонент @SortIcon("remote")</button></th>
+                                <th><button type="button" @onclick='() => SortCallHistory("number")'>Номер @SortIcon("number")</button></th>
+                                <th><button type="button" @onclick='() => SortCallHistory("server")'>Сервер @SortIcon("server")</button></th>
+                                <th><button type="button" @onclick='() => SortCallHistory("duration")'>Длительность @SortIcon("duration")</button></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var call in FilteredCallHistory)
+                            {
+                                <tr>
+                                    <td><span class="call-type-badge @CallTypeClass(call.Type)">@DisplayValue(call.Type)</span></td>
+                                    <td>@DisplayValue(call.DateTimeText)</td>
+                                    <td>@DisplayValue(call.LocalName)</td>
+                                    <td>
+                                        <div class="call-party">@DisplayValue(call.RemoteDisplay)</div>
+                                    </td>
+                                    <td><strong>@DisplayValue(call.RemoteName)</strong></td>
+                                    <td>
+                                        <div>@DisplayValue(call.RemoteServer)</div>
+                                    </td>
+                                    <td>@DisplayValue(call.Duration)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                @if (!FilteredCallHistory.Any())
+                {
+                    <div class="empty-state compact">По этому поиску ничего не найдено.</div>
+                }
+            }
+            else if (!_loadingCallHistory && string.IsNullOrWhiteSpace(_callHistoryError))
+            {
+                <div class="empty-state compact">История звонков ещё не загружена.</div>
+            }
+        </section>
+    }
 }
+
+</AppAuthRequired>
 
 @code {
     [Parameter] public string Ip { get; set; } = string.Empty;
@@ -269,7 +513,20 @@ else
     private bool _loadingStatus;
     private string? _statusError;
     private string _rawHtmlPreview = string.Empty;
+    private bool _loadingExpansionPanel;
+    private bool _savingExpansionPanel;
+    private int _selectedExpansionPage = 1;
+    private string _expansionPanelMessage = string.Empty;
+    private Dictionary<string, string> _loadedExpansionValues = new(StringComparer.OrdinalIgnoreCase);
+    private bool _loadingCallHistory;
+    private string _callHistoryMessage = string.Empty;
+    private string _callHistoryError = string.Empty;
+    private List<CallHistoryEntry> _callHistory = new();
+    private string _callHistorySearch = string.Empty;
+    private string _callHistorySortColumn = "datetime";
+    private bool _callHistorySortAscending;
 
+    private int _selectedAccountLine = 1;
     private bool _lineEnabled = true;
     private string _lineLabel = string.Empty;
     private string _displayName = string.Empty;
@@ -352,17 +609,21 @@ else
     protected override void OnInitialized()
     {
         Credentials.Changed += OnCredentialsChanged;
+        Store.Changed += OnStoreChanged;
         _phone = Store.GetByIp(Ip);
         SeedConfigFromPhone();
+        SnapshotExpansionValues();
     }
 
     private void SeedConfigFromPhone()
     {
         if (_phone == null) return;
 
+        _selectedAccountLine = ResolveInitialAccountLine();
+
         if (_phone.ConfigFields is { Count: > 0 } cachedConfig)
         {
-            ApplyStoredConfig(cachedConfig);
+            ApplyStoredConfig(GetStoredConfigForLine(_selectedAccountLine, cachedConfig));
             _loadedConfigValues = CurrentConfigValues();
             return;
         }
@@ -568,11 +829,17 @@ else
         AddField(fields, "Current Time", status.CurrentTime);
         AddField(fields, "Uptime", FormatUptime(status.Uptime));
 
+        SyncAccountsFromStatus(status.Accounts);
+
+        foreach (var account in status.Accounts.OrderBy(x => x.Line))
+        {
+            AddField(fields, $"Account {account.Line}", FormatAccount(account));
+        }
+
         var firstAccount = status.Accounts.OrderBy(x => x.Line).FirstOrDefault();
         if (firstAccount != null)
         {
             var accountText = FormatAccount(firstAccount);
-            AddField(fields, "Account 1", accountText);
             AddField(fields, "Account", firstAccount.Number ?? accountText);
             _phone.Account = firstAccount.Number ?? _phone.Account;
         }
@@ -589,6 +856,165 @@ else
 
         if (!string.IsNullOrWhiteSpace(status.DeviceId))
             _phone.SerialNumber = status.DeviceId;
+    }
+
+    private void SyncAccountsFromStatus(IEnumerable<AccountStatus> accounts)
+    {
+        if (_phone == null)
+            return;
+
+        foreach (var account in accounts)
+        {
+            var line = account.Line <= 0 ? 1 : account.Line;
+            var target = GetOrCreateAccount(line);
+            target.Label = account.Label ?? target.Label;
+            target.DisplayName = account.Label ?? target.DisplayName;
+            target.RegisterName = account.Number ?? target.RegisterName;
+            target.UserName = account.Number ?? target.UserName;
+            target.SipServer1 = account.Server ?? target.SipServer1;
+            target.IsDefault = account.IsDefault;
+        }
+
+        var defaultLine = _phone.Accounts.FirstOrDefault(x => x.IsDefault)?.Line;
+        if (defaultLine is > 0)
+            _phone.DefaultAccountLine = defaultLine;
+
+        NormalizeAccountSummary();
+    }
+
+    private void SyncAccountsFromConfigFields(Dictionary<string, string> fields)
+    {
+        if (_phone == null)
+            return;
+
+        var maxLine = Math.Max(DetectedMaxAccountLine(), DetectMaxAccountLine(fields));
+        for (var line = 1; line <= Math.Min(maxLine, 16); line++)
+        {
+            if (!HasAccountData(fields, line) && _phone.Accounts.All(x => x.Line != line))
+                continue;
+
+            var account = GetOrCreateAccount(line);
+            account.Enabled = BoolValue(fields, account.Enabled, AccountKeys(line, "enable"));
+            account.Label = ValueFrom(fields, account.Label, AccountKeys(line, "label"));
+            account.DisplayName = ValueFrom(fields, account.DisplayName, AccountKeys(line, "display"));
+            account.RegisterName = ValueFrom(fields, account.RegisterName, AccountKeys(line, "register"));
+            account.UserName = ValueFrom(fields, account.UserName, AccountKeys(line, "user"));
+            account.SipServer1 = ValueFrom(fields, account.SipServer1, AccountKeys(line, "server1"));
+            account.SipPort1 = IntValue(fields, account.SipPort1, AccountKeys(line, "port1"));
+            account.Transport1 = TransportValue(fields, account.Transport1, AccountKeys(line, "transport1"));
+            account.ServerTimeout1 = IntValue(fields, account.ServerTimeout1, AccountKeys(line, "expires1"));
+            account.RetryCount1 = IntValue(fields, account.RetryCount1, AccountKeys(line, "retry1"));
+            account.SipServer2 = ValueFrom(fields, account.SipServer2, AccountKeys(line, "server2"));
+            account.SipPort2 = IntValue(fields, account.SipPort2, AccountKeys(line, "port2"));
+            account.Transport2 = TransportValue(fields, account.Transport2, AccountKeys(line, "transport2"));
+            account.ServerTimeout2 = IntValue(fields, account.ServerTimeout2, AccountKeys(line, "expires2"));
+            account.RetryCount2 = IntValue(fields, account.RetryCount2, AccountKeys(line, "retry2"));
+        }
+
+        var defaultLine = IntValue(
+            fields,
+            _phone.DefaultAccountLine ?? 0,
+            "DefaultAccount",
+            "AccountDefault",
+            "DefaultAccountLine",
+            "PhoneDefaultAccount",
+            "account.default",
+            "account.default_line");
+
+        if (defaultLine > 0)
+            _phone.DefaultAccountLine = defaultLine;
+
+        NormalizeAccountSummary();
+    }
+
+    private static int DetectMaxAccountLine(Dictionary<string, string> fields)
+    {
+        var max = 1;
+        foreach (var key in fields.Keys)
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(key, @"(?:Account\w*\.|account\.|Line)(\d+)");
+            if (match.Success && int.TryParse(match.Groups[1].Value, out var line))
+                max = Math.Max(max, line);
+        }
+
+        return max;
+    }
+
+    private static bool HasAccountData(Dictionary<string, string> fields, int line) =>
+        AccountKeys(line, "label")
+            .Concat(AccountKeys(line, "display"))
+            .Concat(AccountKeys(line, "register"))
+            .Concat(AccountKeys(line, "user"))
+            .Concat(AccountKeys(line, "server1"))
+            .Any(key => fields.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value));
+
+    private void SyncCurrentFormToAccountCache()
+    {
+        if (_phone == null)
+            return;
+
+        var account = GetOrCreateAccount(_selectedAccountLine);
+        account.Enabled = _lineEnabled;
+        account.Label = NormalizeCfgValue(_lineLabel);
+        account.DisplayName = NormalizeCfgValue(_displayName);
+        account.RegisterName = NormalizeCfgValue(_registerName);
+        account.UserName = NormalizeCfgValue(_userName);
+        account.SipServer1 = NormalizeCfgValue(_sipServer1);
+        account.SipPort1 = _sipPort1;
+        account.Transport1 = _transport1;
+        account.ServerTimeout1 = _serverTimeout1;
+        account.RetryCount1 = _retryCount1;
+        account.SipServer2 = NormalizeCfgValue(_sipServer2);
+        account.SipPort2 = _sipPort2;
+        account.Transport2 = _transport2;
+        account.ServerTimeout2 = _serverTimeout2;
+        account.RetryCount2 = _retryCount2;
+
+        NormalizeAccountSummary();
+    }
+
+    private PhoneAccountInfo GetOrCreateAccount(int line)
+    {
+        if (_phone == null)
+            throw new InvalidOperationException("Phone is not loaded.");
+
+        var account = _phone.Accounts.FirstOrDefault(x => x.Line == line);
+        if (account != null)
+            return account;
+
+        account = new PhoneAccountInfo { Line = line };
+        _phone.Accounts.Add(account);
+        _phone.Accounts = _phone.Accounts.OrderBy(x => x.Line).ToList();
+        return account;
+    }
+
+    private int ResolvePrimaryAccountLine()
+    {
+        if (_phone?.DefaultAccountLine is > 0)
+            return _phone.DefaultAccountLine.Value;
+
+        return _phone?.Accounts
+            .Where(x => x.Enabled || !string.IsNullOrWhiteSpace(x.Label) || !string.IsNullOrWhiteSpace(x.UserName))
+            .OrderBy(x => x.Line)
+            .Select(x => x.Line)
+            .FirstOrDefault(1) ?? 1;
+    }
+
+    private void NormalizeAccountSummary()
+    {
+        if (_phone == null)
+            return;
+
+        foreach (var account in _phone.Accounts)
+            account.IsDefault = _phone.DefaultAccountLine == account.Line;
+
+        var primaryLine = ResolvePrimaryAccountLine();
+        var primary = _phone.Accounts.FirstOrDefault(x => x.Line == primaryLine);
+        var primaryText = primary == null
+            ? string.Empty
+            : FirstNonEmpty(primary.UserName, primary.RegisterName, primary.Label, primary.DisplayName);
+
+        _phone.Account = string.IsNullOrWhiteSpace(primaryText) ? "-" : primaryText;
     }
 
     private static void AddField(Dictionary<string, string> fields, string key, string? value)
@@ -638,11 +1064,12 @@ else
 
         if (_phone?.StatusFields is { Count: > 0 } fields)
         {
-            var label = ValueFrom(fields, string.Empty, "account.info.1.label", "account.info.0.label", "data.1.label", "data.0.label");
-            var displayName = ValueFrom(fields, string.Empty, "account.info.1.displayName", "account.info.0.displayName", "data.1.displayName", "data.0.displayName");
-            var registerName = ValueFrom(fields, string.Empty, "account.info.1.registerName", "account.info.0.registerName", "data.1.registerName", "data.0.registerName");
-            var userName = ValueFrom(fields, string.Empty, "account.info.1.userName", "account.info.0.userName", "data.1.userName", "data.0.userName");
-            var sipServer = ValueFrom(fields, string.Empty, "account.info.1.sipServer", "account.info.0.sipServer", "data.1.sipServer", "data.0.sipServer");
+            var line = _selectedAccountLine;
+            var label = ValueFrom(fields, string.Empty, AccountKeys(line, "label"));
+            var displayName = ValueFrom(fields, string.Empty, AccountKeys(line, "display"));
+            var registerName = ValueFrom(fields, string.Empty, AccountKeys(line, "register"));
+            var userName = ValueFrom(fields, string.Empty, AccountKeys(line, "user"));
+            var sipServer = ValueFrom(fields, string.Empty, AccountKeys(line, "server1"));
 
             if (!string.IsNullOrWhiteSpace(label))
                 _lineLabel = label;
@@ -702,10 +1129,16 @@ else
                 : await LoadLegacyAccountConfigFields(creds.Value.username, creds.Value.password);
 
             await MergeStatusFieldsForConfig(fields, creds.Value.username, creds.Value.password);
+            SyncAccountsFromConfigFields(fields);
+            SaveLoadedAccountConfigToPhoneCache(fields);
+            _selectedAccountLine = AccountLineOptions.Contains(_selectedAccountLine)
+                ? _selectedAccountLine
+                : ResolveInitialAccountLine();
             ApplyAccountConfig(fields);
             SaveCurrentConfigToPhoneCache();
             Store.Upsert(_phone);
             await Store.SaveAsync();
+            LogPhoneAction("Загрузка конфигурации аккаунта", $"Аккаунт: {_selectedAccountLine}");
             _configMessage = "Параметры аккаунта загружены из телефона. Пароль не подставляю в форму из соображений безопасности.";
         }
         catch (Exception ex)
@@ -719,25 +1152,501 @@ else
         }
     }
 
+    private async Task LoadExpansionPanel()
+    {
+        if (_phone == null)
+            return;
+
+        var creds = Credentials.GetAdminCredentials();
+        if (creds == null)
+        {
+            _expansionPanelMessage = "Требуется админ-режим для загрузки доп-панели.";
+            return;
+        }
+
+        _loadingExpansionPanel = true;
+        _expansionPanelMessage = "Загрузка доп-панели...";
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var panel = await ModernApiClient.GetExpansionPanelAsync(_phone.IpAddress, creds.Value.username, creds.Value.password);
+            _phone.HasExpansionPanel = panel.IsDetected;
+            _phone.ExpansionPanelCount = panel.Count;
+            _phone.ExpansionPanelType = panel.Type;
+            _phone.ExpansionKeys = panel.Keys.OrderBy(x => x.Index).ToList();
+            EnsureExpansionKeys();
+            SnapshotExpansionValues();
+            Store.Upsert(_phone);
+            await Store.SaveAsync();
+            LogPhoneAction("Загрузка панели расширения", $"Тип: {_phone.ExpansionPanelType}. Клавиш: {_phone.ExpansionKeys.Count}");
+            _expansionPanelMessage = panel.IsDetected
+                ? $"Доп-панель загружена: {_phone.ExpansionPanelType}, клавиш: {_phone.ExpansionKeys.Count}"
+                : "Доп-панель не обнаружена.";
+        }
+        catch (Exception ex)
+        {
+            _expansionPanelMessage = $"Ошибка загрузки доп-панели: {GetUsefulErrorMessage(ex)}";
+        }
+        finally
+        {
+            _loadingExpansionPanel = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void SelectExpansionPage(int page)
+    {
+        _selectedExpansionPage = Math.Clamp(page, 1, 3);
+        EnsureExpansionKeys();
+    }
+
+    private IEnumerable<ExpansionKeyInfo> ExpansionPageKeys(bool odd)
+    {
+        EnsureExpansionKeys();
+        var start = ((_selectedExpansionPage - 1) * 20) + 1;
+        var end = start + 19;
+        return _phone?.ExpansionKeys
+            .Where(x => x.Index >= start && x.Index <= end && (x.Index % 2 == (odd ? 1 : 0)))
+            .OrderBy(x => x.Index) ?? Enumerable.Empty<ExpansionKeyInfo>();
+    }
+
+    private void EnsureExpansionKeys()
+    {
+        if (_phone == null)
+            return;
+
+        for (var index = 1; index <= 60; index++)
+        {
+            if (_phone.ExpansionKeys.Any(x => x.Index == index))
+                continue;
+
+            _phone.ExpansionKeys.Add(new ExpansionKeyInfo
+            {
+                Index = index,
+                Id = (index - 1).ToString(),
+                KeyName = $"Key{index}",
+                Type = "13",
+                Line = "0"
+            });
+        }
+
+        _phone.ExpansionKeys = _phone.ExpansionKeys.OrderBy(x => x.Index).ToList();
+    }
+
+    private async Task SaveExpansionPanel()
+    {
+        if (_phone == null)
+            return;
+
+        var creds = Credentials.GetAdminCredentials();
+        if (creds == null)
+        {
+            _expansionPanelMessage = "Требуется админ-режим для сохранения панели расширения.";
+            return;
+        }
+
+        var changes = BuildExpansionChangedCfgValues();
+        if (changes.Count == 0)
+        {
+            _expansionPanelMessage = "Изменений на панели расширения нет.";
+            return;
+        }
+
+        _savingExpansionPanel = true;
+        _expansionPanelMessage = "Формирование и отправка delta .cfg для панели расширения...";
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var path = await SaveExpansionDeltaCfgAsync(changes);
+            var result = await ModernApiClient.ImportCfgAsync(_phone.IpAddress, creds.Value.username, creds.Value.password, path);
+            if (result.Success)
+            {
+                NormalizeExpansionKeysForSpeedDial();
+                _loadedExpansionValues = CurrentExpansionValues();
+                Store.Upsert(_phone);
+                await Store.SaveAsync();
+                LogPhoneAction("Сохранение панели расширения", $"Изменений: {changes.Count}. Файл: {path}");
+                _expansionPanelMessage = $"Панель расширения сохранена. Delta .cfg: {path}";
+            }
+            else
+            {
+                _expansionPanelMessage = $"Ошибка сохранения панели расширения: {result.Message}";
+            }
+        }
+        catch (Exception ex)
+        {
+            _expansionPanelMessage = $"Ошибка сохранения панели расширения: {GetUsefulErrorMessage(ex)}";
+        }
+        finally
+        {
+            _savingExpansionPanel = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void NormalizeExpansionKeysForSpeedDial()
+    {
+        if (_phone == null)
+            return;
+
+        foreach (var key in _phone.ExpansionKeys)
+        {
+            key.Line = "0";
+            key.Type = "13";
+        }
+    }
+
+    private async Task LoadCallHistory()
+    {
+        if (_phone == null)
+            return;
+
+        var creds = Credentials.GetAdminCredentials();
+        if (creds == null)
+        {
+            _callHistoryError = "Для загрузки истории звонков нужен админ-режим.";
+            return;
+        }
+
+        _loadingCallHistory = true;
+        _callHistoryError = string.Empty;
+        _callHistoryMessage = "Загрузка истории звонков...";
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var family = ResolvePhoneFamily();
+            _callHistory = family == YealinkPhoneFamily.T3x
+                ? await StatusClient.GetLegacyCallHistoryAsync(_phone.IpAddress, creds.Value.username, creds.Value.password)
+                : await ModernApiClient.GetCallHistoryAsync(_phone.IpAddress, creds.Value.username, creds.Value.password);
+            LogPhoneAction("Загрузка истории звонков", $"Записей: {_callHistory.Count}");
+
+            _callHistoryMessage = _callHistory.Count == 0
+                ? "История звонков пуста."
+                : $"Загружено записей: {_callHistory.Count}";
+        }
+        catch (Exception ex)
+        {
+            _callHistoryError = $"Ошибка загрузки истории звонков: {GetUsefulErrorMessage(ex)}";
+            _callHistoryMessage = string.Empty;
+        }
+        finally
+        {
+            _loadingCallHistory = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private IEnumerable<CallHistoryEntry> FilteredCallHistory
+    {
+        get
+        {
+            var query = _callHistorySearch.Trim();
+            IEnumerable<CallHistoryEntry> rows = _callHistory;
+
+            if (!string.IsNullOrWhiteSpace(query))
+                rows = rows.Where(call => MatchesCallHistorySearch(call, query));
+
+            return _callHistorySortColumn switch
+            {
+                "type" => SortRows(rows, x => x.Type),
+                "local" => SortRows(rows, x => x.LocalName),
+                "remote" => SortRows(rows, x => x.RemoteDisplay),
+                "number" => SortRows(rows, x => x.RemoteName),
+                "server" => SortRows(rows, x => x.RemoteServer),
+                "duration" => SortRows(rows, x => ParseCallDuration(x.Duration)),
+                _ => SortRows(rows, x => ParseCallDateTime(x.DateTimeText))
+            };
+        }
+    }
+
+    private int CountCalls(string type) =>
+        _callHistory.Count(x => x.Type.Equals(type, StringComparison.OrdinalIgnoreCase));
+
+    private void SortCallHistory(string column)
+    {
+        if (_callHistorySortColumn.Equals(column, StringComparison.OrdinalIgnoreCase))
+        {
+            _callHistorySortAscending = !_callHistorySortAscending;
+            return;
+        }
+
+        _callHistorySortColumn = column;
+        _callHistorySortAscending = column is not ("datetime" or "duration");
+    }
+
+    private string SortIcon(string column)
+    {
+        if (!_callHistorySortColumn.Equals(column, StringComparison.OrdinalIgnoreCase))
+            return string.Empty;
+
+        return _callHistorySortAscending ? "↑" : "↓";
+    }
+
+    private string CallTypeClass(string type)
+    {
+        if (type.Contains("Пропущ", StringComparison.OrdinalIgnoreCase))
+            return "missed";
+
+        if (type.Contains("Принят", StringComparison.OrdinalIgnoreCase))
+            return "received";
+
+        if (type.Contains("Исход", StringComparison.OrdinalIgnoreCase))
+            return "outgoing";
+
+        if (type.Contains("Переад", StringComparison.OrdinalIgnoreCase))
+            return "forwarded";
+
+        return "unknown";
+    }
+
+    private IEnumerable<CallHistoryEntry> SortRows<TKey>(IEnumerable<CallHistoryEntry> rows, Func<CallHistoryEntry, TKey> keySelector) =>
+        _callHistorySortAscending
+            ? rows.OrderBy(keySelector)
+            : rows.OrderByDescending(keySelector);
+
+    private static bool MatchesCallHistorySearch(CallHistoryEntry call, string query) =>
+        Contains(call.Type, query) ||
+        Contains(call.DateTimeText, query) ||
+        Contains(call.LocalName, query) ||
+        Contains(call.LocalServer, query) ||
+        Contains(call.RemoteDisplay, query) ||
+        Contains(call.RemoteName, query) ||
+        Contains(call.RemoteServer, query) ||
+        Contains(call.Duration, query);
+
+    private static bool Contains(string? value, string query) =>
+        value?.Contains(query, StringComparison.OrdinalIgnoreCase) == true;
+
+    private static DateTime ParseCallDateTime(string? value) =>
+        DateTime.TryParseExact(value, "yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var parsed)
+            ? parsed
+            : DateTime.MinValue;
+
+    private static TimeSpan ParseCallDuration(string? value) =>
+        TimeSpan.TryParse(value, System.Globalization.CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : TimeSpan.Zero;
+
+    private Dictionary<string, string> CurrentExpansionValues()
+    {
+        EnsureExpansionKeys();
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        if (_phone == null)
+            return values;
+
+        foreach (var key in _phone.ExpansionKeys)
+        {
+            values[$"{key.Index}.label"] = NormalizeCfgValue(key.Label);
+            values[$"{key.Index}.value"] = NormalizeCfgValue(key.Value);
+            values[$"{key.Index}.line"] = "0";
+            values[$"{key.Index}.type"] = "13";
+        }
+
+        return values;
+    }
+
+    private void SnapshotExpansionValues()
+    {
+        _loadedExpansionValues = CurrentExpansionValues();
+    }
+
+    private Dictionary<string, string> BuildExpansionChangedCfgValues()
+    {
+        var current = CurrentExpansionValues();
+        var changes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var touchedIndexes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var item in current)
+        {
+            if (!_loadedExpansionValues.TryGetValue(item.Key, out var loadedValue) ||
+                !string.Equals(item.Value, loadedValue, StringComparison.Ordinal))
+            {
+                var parts = item.Key.Split('.', 2);
+                if (parts.Length == 2)
+                {
+                    changes[$"expansion_module.1.key.{parts[0]}.{parts[1]}"] = item.Value;
+                    touchedIndexes.Add(parts[0]);
+                }
+            }
+        }
+
+        foreach (var index in touchedIndexes)
+        {
+            changes[$"expansion_module.1.key.{index}.line"] = "0";
+            changes[$"expansion_module.1.key.{index}.type"] = "13";
+        }
+
+        return changes;
+    }
+
+    private async Task<string> SaveExpansionDeltaCfgAsync(Dictionary<string, string> changes)
+    {
+        if (_phone == null)
+            throw new InvalidOperationException("Phone is not loaded.");
+
+        var dir = Path.Combine(AppContext.BaseDirectory, "generated", SafePathSegment(_phone.IpAddress));
+        Directory.CreateDirectory(dir);
+
+        var path = Path.Combine(dir, $"expansion-panel-delta-{DateTime.Now:yyyyMMdd-HHmmss}.cfg");
+        var lines = new List<string> { "#!version:1.0.0.1", string.Empty };
+        lines.AddRange(changes.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase).Select(x => $"{x.Key} = {x.Value}"));
+
+        await File.WriteAllTextAsync(path, string.Join(Environment.NewLine, lines), System.Text.Encoding.UTF8);
+        return path;
+    }
+
+    private bool ShowAccountSelector => IsModernConfigPhone();
+
+    private IEnumerable<int> AccountLineOptions
+    {
+        get
+        {
+            if (_phone == null || !IsModernConfigPhone())
+                return new[] { 1 };
+
+            var maxLine = Math.Max(6, DetectedMaxAccountLine());
+            return Enumerable.Range(1, Math.Clamp(maxLine, 1, 16));
+        }
+    }
+
+    private int ResolveInitialAccountLine()
+    {
+        if (_phone == null)
+            return 1;
+
+        if (_phone.DefaultAccountLine is > 0)
+            return _phone.DefaultAccountLine.Value;
+
+        return _phone.Accounts
+            .Where(x => x.Enabled || !string.IsNullOrWhiteSpace(x.Label) || !string.IsNullOrWhiteSpace(x.UserName))
+            .OrderBy(x => x.Line)
+            .Select(x => x.Line)
+            .FirstOrDefault(1);
+    }
+
+    private int DetectedMaxAccountLine()
+    {
+        if (_phone == null)
+            return 1;
+
+        var max = _phone.Accounts.Count == 0 ? 1 : _phone.Accounts.Max(x => Math.Max(x.Line, 1));
+
+        foreach (var key in _phone.ConfigFields.Keys.Concat(_phone.StatusFields.Keys))
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(key, @"(?:Account\w*\.|account\.|Line)(\d+)");
+            if (match.Success && int.TryParse(match.Groups[1].Value, out var line))
+                max = Math.Max(max, line);
+        }
+
+        return max;
+    }
+
+    private string AccountLineTitle(int line)
+    {
+        var account = _phone?.Accounts.FirstOrDefault(x => x.Line == line);
+        var label = account == null
+            ? string.Empty
+            : FirstNonEmpty(account.Label, account.DisplayName, account.UserName, account.RegisterName);
+
+        var title = string.IsNullOrWhiteSpace(label)
+            ? $"Аккаунт {line}"
+            : $"Аккаунт {line}: {label}";
+
+        return _phone?.DefaultAccountLine == line ? $"{title} (по умолчанию)" : title;
+    }
+
+    private void OnAccountLineChanged(ChangeEventArgs e)
+    {
+        if (_phone == null)
+            return;
+
+        SaveCurrentConfigToPhoneCache();
+
+        if (int.TryParse(e.Value?.ToString(), out var line) && line > 0)
+            _selectedAccountLine = line;
+
+        ApplyStoredConfig(GetStoredConfigForLine(_selectedAccountLine, _phone.ConfigFields));
+        ApplyStatusToConfigDefaults();
+        _loadedConfigValues = CurrentConfigValues();
+    }
+
+    private Dictionary<string, string> GetStoredConfigForLine(int line, Dictionary<string, string> values)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var prefix = LineStoragePrefix(line);
+
+        foreach (var item in values)
+        {
+            if (item.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                result[item.Key[prefix.Length..]] = item.Value;
+        }
+
+        if (line == 1)
+        {
+            foreach (var key in ConfigToCfgKey.Keys)
+            {
+                if (!result.ContainsKey(key) && values.TryGetValue(key, out var value))
+                    result[key] = value;
+            }
+        }
+
+        return result;
+    }
+
+    private static string LineStoragePrefix(int line) => line <= 1 ? "Line1." : $"Line{line}.";
+
+    private static string FirstNonEmpty(params string?[] values) =>
+        values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
+
+    private static string[] AccountKeys(int line, string field)
+    {
+        var index = line - 1;
+        return field switch
+        {
+            "enable" => [$"AccountEnable.{line}", $"data.formData.AccountEnable.{line}", $"account.{line}.enable"],
+            "label" => [$"AccountLabel.{line}", $"data.formData.AccountLabel.{line}", $"account.{line}.label", $"account.info.{line}.label", $"account.info.{index}.label", $"data.{line}.label", $"data.{index}.label"],
+            "display" => [$"AccountDisplayName.{line}", $"data.formData.AccountDisplayName.{line}", $"account.{line}.display_name", $"account.info.{line}.displayName", $"account.info.{index}.displayName", $"data.{line}.displayName", $"data.{index}.displayName"],
+            "register" => [$"AccountRegisterName.{line}", $"data.formData.AccountRegisterName.{line}", $"account.{line}.auth_name", $"account.info.{line}.registerName", $"account.info.{index}.registerName", $"data.{line}.registerName", $"data.{index}.registerName"],
+            "user" => [$"AccountUserName.{line}", $"data.formData.AccountUserName.{line}", $"account.{line}.user_name", $"account.info.{line}.userName", $"account.info.{index}.userName", $"data.{line}.userName", $"data.{index}.userName"],
+            "server1" => [$"AccountServerAddr1.{line}", $"data.formData.AccountServerAddr1.{line}", $"AccountServerAddr.{line}.1", $"data.formData.AccountServerAddr.{line}.1", $"account.{line}.sip_server.1.address", $"account.info.{line}.sipServer", $"account.info.{index}.sipServer", $"data.{line}.sipServer", $"data.{index}.sipServer"],
+            "port1" => [$"AccountServerPort1.{line}", $"data.formData.AccountServerPort1.{line}", $"AccountServerPort.{line}.1", $"data.formData.AccountServerPort.{line}.1", $"account.{line}.sip_server.1.port"],
+            "transport1" => [$"AccountServerTransport1.{line}", $"data.formData.AccountServerTransport1.{line}", $"AccountServerTransport.{line}.1", $"data.formData.AccountServerTransport.{line}.1", $"account.{line}.sip_server.1.transport_type"],
+            "expires1" => [$"AccountServerExpires1.{line}", $"data.formData.AccountServerExpires1.{line}", $"AccountServerExpires.{line}.1", $"data.formData.AccountServerExpires.{line}.1", $"account.{line}.sip_server.1.expires"],
+            "retry1" => [$"AccountServerRetryCounts1.{line}", $"data.formData.AccountServerRetryCounts1.{line}", $"AccountServerRetryCounts.{line}.1", $"data.formData.AccountServerRetryCounts.{line}.1", $"account.{line}.sip_server.1.retry_counts"],
+            "server2" => [$"AccountServerAddr2.{line}", $"data.formData.AccountServerAddr2.{line}", $"AccountServerAddr.{line}.2", $"data.formData.AccountServerAddr.{line}.2", $"account.{line}.sip_server.2.address"],
+            "port2" => [$"AccountServerPort2.{line}", $"data.formData.AccountServerPort2.{line}", $"AccountServerPort.{line}.2", $"data.formData.AccountServerPort.{line}.2", $"account.{line}.sip_server.2.port"],
+            "transport2" => [$"AccountServerTransport2.{line}", $"data.formData.AccountServerTransport2.{line}", $"AccountServerTransport.{line}.2", $"data.formData.AccountServerTransport.{line}.2", $"account.{line}.sip_server.2.transport_type"],
+            "expires2" => [$"AccountServerExpires2.{line}", $"data.formData.AccountServerExpires2.{line}", $"AccountServerExpires.{line}.2", $"data.formData.AccountServerExpires.{line}.2", $"account.{line}.sip_server.2.expires"],
+            "retry2" => [$"AccountServerRetryCounts2.{line}", $"data.formData.AccountServerRetryCounts2.{line}", $"AccountServerRetryCounts.{line}.2", $"data.formData.AccountServerRetryCounts.{line}.2", $"account.{line}.sip_server.2.retry_counts"],
+            _ => []
+        };
+    }
+
     private void ApplyAccountConfig(Dictionary<string, string> fields)
     {
-        _lineEnabled = BoolValue(fields, true, "AccountEnable.1", "data.formData.AccountEnable.1", "account.1.enable");
-        _lineLabel = ValueFrom(fields, _lineLabel, "AccountLabel.1", "data.formData.AccountLabel.1", "account.1.label", "account.info.1.label", "account.info.0.label", "data.1.label", "data.0.label");
-        _displayName = ValueFrom(fields, _displayName, "AccountDisplayName.1", "data.formData.AccountDisplayName.1", "account.1.display_name", "account.info.1.displayName", "account.info.0.displayName", "data.1.displayName", "data.0.displayName");
-        _registerName = ValueFrom(fields, _registerName, "AccountRegisterName.1", "data.formData.AccountRegisterName.1", "account.1.auth_name", "account.info.1.registerName", "account.info.0.registerName", "data.1.registerName", "data.0.registerName");
-        _userName = ValueFrom(fields, _userName, "AccountUserName.1", "data.formData.AccountUserName.1", "account.1.user_name", "account.info.1.userName", "account.info.0.userName", "data.1.userName", "data.0.userName");
+        var line = _selectedAccountLine;
 
-        _sipServer1 = ValueFrom(fields, _sipServer1, "AccountServerAddr1.1", "data.formData.AccountServerAddr1.1", "AccountServerAddr.1.1", "data.formData.AccountServerAddr.1.1", "account.1.sip_server.1.address", "account.info.1.sipServer", "account.info.0.sipServer", "data.1.sipServer", "data.0.sipServer");
-        _sipPort1 = IntValue(fields, _sipPort1, "AccountServerPort1.1", "data.formData.AccountServerPort1.1", "AccountServerPort.1.1", "data.formData.AccountServerPort.1.1");
-        _transport1 = TransportValue(fields, _transport1, "AccountServerTransport1.1", "data.formData.AccountServerTransport1.1", "AccountServerTransport.1.1", "data.formData.AccountServerTransport.1.1");
-        _serverTimeout1 = IntValue(fields, _serverTimeout1, "AccountServerExpires1.1", "data.formData.AccountServerExpires1.1", "AccountServerExpires.1.1", "data.formData.AccountServerExpires.1.1", "account.1.sip_server.1.expires");
-        _retryCount1 = IntValue(fields, _retryCount1, "AccountServerRetryCounts1.1", "data.formData.AccountServerRetryCounts1.1", "AccountServerRetryCounts.1.1", "data.formData.AccountServerRetryCounts.1.1", "account.1.sip_server.1.retry_counts");
+        _lineEnabled = BoolValue(fields, true, AccountKeys(line, "enable"));
+        _lineLabel = ValueFrom(fields, _lineLabel, AccountKeys(line, "label"));
+        _displayName = ValueFrom(fields, _displayName, AccountKeys(line, "display"));
+        _registerName = ValueFrom(fields, _registerName, AccountKeys(line, "register"));
+        _userName = ValueFrom(fields, _userName, AccountKeys(line, "user"));
 
-        _sipServer2 = ValueFrom(fields, _sipServer2, "AccountServerAddr2.1", "data.formData.AccountServerAddr2.1", "AccountServerAddr.1.2", "data.formData.AccountServerAddr.1.2", "account.1.sip_server.2.address");
-        _sipPort2 = IntValue(fields, _sipPort2, "AccountServerPort2.1", "data.formData.AccountServerPort2.1", "AccountServerPort.1.2", "data.formData.AccountServerPort.1.2");
-        _transport2 = TransportValue(fields, _transport2, "AccountServerTransport2.1", "data.formData.AccountServerTransport2.1", "AccountServerTransport.1.2", "data.formData.AccountServerTransport.1.2");
-        _serverTimeout2 = IntValue(fields, _serverTimeout2, "AccountServerExpires2.1", "data.formData.AccountServerExpires2.1", "AccountServerExpires.1.2", "data.formData.AccountServerExpires.1.2", "account.1.sip_server.2.expires");
-        _retryCount2 = IntValue(fields, _retryCount2, "AccountServerRetryCounts2.1", "data.formData.AccountServerRetryCounts2.1", "AccountServerRetryCounts.1.2", "data.formData.AccountServerRetryCounts.1.2", "account.1.sip_server.2.retry_counts");
+        _sipServer1 = ValueFrom(fields, _sipServer1, AccountKeys(line, "server1"));
+        _sipPort1 = IntValue(fields, _sipPort1, AccountKeys(line, "port1"));
+        _transport1 = TransportValue(fields, _transport1, AccountKeys(line, "transport1"));
+        _serverTimeout1 = IntValue(fields, _serverTimeout1, AccountKeys(line, "expires1"));
+        _retryCount1 = IntValue(fields, _retryCount1, AccountKeys(line, "retry1"));
+
+        _sipServer2 = ValueFrom(fields, _sipServer2, AccountKeys(line, "server2"));
+        _sipPort2 = IntValue(fields, _sipPort2, AccountKeys(line, "port2"));
+        _transport2 = TransportValue(fields, _transport2, AccountKeys(line, "transport2"));
+        _serverTimeout2 = IntValue(fields, _serverTimeout2, AccountKeys(line, "expires2"));
+        _retryCount2 = IntValue(fields, _retryCount2, AccountKeys(line, "retry2"));
 
         _password = string.Empty;
         _loadedConfigValues = CurrentConfigValues();
@@ -852,26 +1761,17 @@ else
         try
         {
             var generatedPath = await SaveDeltaCfgAsync(changes);
-            OperationResult result;
-
-            if (IsModernConfigPhone())
-            {
-                result = await ModernApiClient.ImportCfgAsync(_phone.IpAddress, creds.Value.username, creds.Value.password, generatedPath);
-            }
-            else
-            {
-                var upload = await ConfigManager.UploadConfigAsync(_phone.IpAddress, creds.Value.username, creds.Value.password, generatedPath);
-                result = upload.Success
-                    ? OperationResult.Ok($"CFG import выполнен. Тип: {upload.Filetype}, код: {upload.ResultCode}")
-                    : OperationResult.Fail("CFG import завершился без подтверждения успеха.", upload.RawResponse);
-            }
+            var result = await ImportGeneratedCfgAsync(generatedPath, creds.Value.username, creds.Value.password);
 
             if (result.Success)
             {
-                _phone.Account = _lineLabel;
+                if (_selectedAccountLine == ResolvePrimaryAccountLine())
+                    _phone.Account = FirstNonEmpty(_lineLabel, _userName, _registerName);
+
                 SaveCurrentConfigToPhoneCache();
                 Store.Upsert(_phone);
                 await Store.SaveAsync();
+                LogPhoneAction("Сохранение конфигурации аккаунта", $"Аккаунт: {_selectedAccountLine}. Изменений: {changes.Count}. Файл: {generatedPath}");
                 _loadedConfigValues = CurrentConfigValues();
                 _configMessage = $"Изменения отправлены в телефон. Delta .cfg: {generatedPath}";
             }
@@ -889,6 +1789,66 @@ else
             _savingConfig = false;
             await InvokeAsync(StateHasChanged);
         }
+    }
+
+    private async Task ClearSelectedAccount()
+    {
+        if (_phone == null) return;
+
+        var creds = Credentials.GetAdminCredentials();
+        if (creds == null)
+        {
+            _configMessage = "Требуется admin-авторизация для очистки аккаунта.";
+            return;
+        }
+
+        _savingConfig = true;
+        _configMessage = $"Очистка аккаунта {_selectedAccountLine}: формирование и отправка .cfg...";
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var changes = BuildEmptyAccountCfgValues(_selectedAccountLine);
+            var generatedPath = await SaveDeltaCfgAsync(changes);
+            var result = await ImportGeneratedCfgAsync(generatedPath, creds.Value.username, creds.Value.password);
+
+            if (result.Success)
+            {
+                ClearSelectedAccountCache();
+                Store.Upsert(_phone);
+                await Store.SaveAsync();
+                LogPhoneAction("Очистка аккаунта телефона", $"Аккаунт: {_selectedAccountLine}. Файл: {generatedPath}");
+                _loadedConfigValues = CurrentConfigValues();
+                _configMessage = $"Аккаунт {_selectedAccountLine} очищен на телефоне. Delta .cfg: {generatedPath}";
+            }
+            else
+            {
+                _configMessage = $"Ошибка очистки аккаунта: {result.Message}";
+            }
+        }
+        catch (Exception ex)
+        {
+            _configMessage = $"Ошибка очистки аккаунта: {GetUsefulErrorMessage(ex)}";
+        }
+        finally
+        {
+            _savingConfig = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task<OperationResult> ImportGeneratedCfgAsync(string generatedPath, string username, string password)
+    {
+        if (_phone == null)
+            return OperationResult.Fail("Phone is not loaded.");
+
+        if (IsModernConfigPhone())
+            return await ModernApiClient.ImportCfgAsync(_phone.IpAddress, username, password, generatedPath);
+
+        var upload = await ConfigManager.UploadConfigAsync(_phone.IpAddress, username, password, generatedPath);
+        return upload.Success
+            ? OperationResult.Ok($"CFG import выполнен. Тип: {upload.Filetype}, код: {upload.ResultCode}")
+            : OperationResult.Fail("CFG import завершился без подтверждения успеха.", upload.RawResponse);
     }
 
     private async Task ExportConfig()
@@ -915,6 +1875,7 @@ else
             if (result.Success)
             {
                 _lastExportPath = result.FilePath ?? string.Empty;
+                LogPhoneAction("Экспорт CFG", _lastExportPath);
                 _configMessage = $"CFG сохранен: {_lastExportPath}";
             }
             else
@@ -967,6 +1928,10 @@ else
             if (IsModernConfigPhone())
             {
                 var result = await ModernApiClient.ImportCfgAsync(_phone.IpAddress, creds.Value.username, creds.Value.password, tempPath);
+                LogPhoneAction(
+                    result.Success ? "Импорт CFG" : "Ошибка импорта CFG",
+                    $"Файл: {_selectedCfgFile.Name}. {result.Message}",
+                    result.Success);
                 _configMessage = result.Success
                     ? "Импорт выполнен."
                     : $"Импорт завершился с ошибкой: {result.Message}";
@@ -979,6 +1944,10 @@ else
                     creds.Value.password,
                     tempPath);
 
+                LogPhoneAction(
+                    result.Success ? "Импорт CFG" : "Ошибка импорта CFG",
+                    $"Файл: {_selectedCfgFile.Name}. Тип: {result.Filetype}. Код: {result.ResultCode}",
+                    result.Success);
                 _configMessage = result.Success
                     ? $"Импорт выполнен. Тип: {result.Filetype}, код: {result.ResultCode}"
                     : "Импорт завершился без подтверждения успеха.";
@@ -1009,11 +1978,149 @@ else
 
         var values = CurrentConfigValues();
         values.Remove("Password");
-        _phone.ConfigFields = values;
+        var prefix = LineStoragePrefix(_selectedAccountLine);
+
+        foreach (var key in ConfigToCfgKey.Keys.ToArray())
+        {
+            _phone.ConfigFields.Remove($"{prefix}{key}");
+            if (_selectedAccountLine == 1)
+                _phone.ConfigFields.Remove(key);
+        }
+
+        foreach (var item in values)
+        {
+            _phone.ConfigFields[$"{prefix}{item.Key}"] = item.Value;
+            if (_selectedAccountLine == 1)
+                _phone.ConfigFields[item.Key] = item.Value;
+        }
+
+        SyncCurrentFormToAccountCache();
     }
+
+    private void ClearSelectedAccountCache()
+    {
+        if (_phone == null)
+            return;
+
+        var line = _selectedAccountLine;
+        var prefix = LineStoragePrefix(line);
+        var emptyValues = EmptyStoredAccountValues();
+
+        foreach (var key in ConfigToCfgKey.Keys.ToArray())
+        {
+            _phone.ConfigFields.Remove($"{prefix}{key}");
+            if (line == 1)
+                _phone.ConfigFields.Remove(key);
+        }
+
+        foreach (var item in emptyValues)
+        {
+            _phone.ConfigFields[$"{prefix}{item.Key}"] = item.Value;
+            if (line == 1)
+                _phone.ConfigFields[item.Key] = item.Value;
+        }
+
+        _phone.StatusFields.Remove($"Account {line}");
+
+        var account = GetOrCreateAccount(line);
+        account.Enabled = false;
+        account.Label = string.Empty;
+        account.DisplayName = string.Empty;
+        account.RegisterName = string.Empty;
+        account.UserName = string.Empty;
+        account.SipServer1 = string.Empty;
+        account.SipPort1 = 5060;
+        account.Transport1 = "UDP";
+        account.ServerTimeout1 = 3600;
+        account.RetryCount1 = 3;
+        account.SipServer2 = string.Empty;
+        account.SipPort2 = 5060;
+        account.Transport2 = "UDP";
+        account.ServerTimeout2 = 3600;
+        account.RetryCount2 = 3;
+
+        if (_phone.DefaultAccountLine == line)
+        {
+            _phone.DefaultAccountLine = _phone.Accounts
+                .Where(x => x.Line != line &&
+                            (x.Enabled ||
+                             !string.IsNullOrWhiteSpace(x.Label) ||
+                             !string.IsNullOrWhiteSpace(x.UserName) ||
+                             !string.IsNullOrWhiteSpace(x.RegisterName)))
+                .OrderBy(x => x.Line)
+                .Select(x => (int?)x.Line)
+                .FirstOrDefault();
+        }
+
+        NormalizeAccountSummary();
+        ApplyStoredConfig(GetStoredConfigForLine(line, _phone.ConfigFields));
+    }
+
+    private static Dictionary<string, string> EmptyStoredAccountValues() => new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["LineEnabled"] = "0",
+        ["LineLabel"] = string.Empty,
+        ["DisplayName"] = string.Empty,
+        ["RegisterName"] = string.Empty,
+        ["UserName"] = string.Empty,
+        ["SipServer1"] = string.Empty,
+        ["SipPort1"] = "5060",
+        ["Transport1"] = "0",
+        ["ServerTimeout1"] = "3600",
+        ["RetryCount1"] = "3",
+        ["SipServer2"] = string.Empty,
+        ["SipPort2"] = "5060",
+        ["Transport2"] = "0",
+        ["ServerTimeout2"] = "3600",
+        ["RetryCount2"] = "3"
+    };
+
+    private void SaveLoadedAccountConfigToPhoneCache(Dictionary<string, string> fields)
+    {
+        if (_phone == null)
+            return;
+
+        var maxLine = Math.Min(Math.Max(DetectedMaxAccountLine(), DetectMaxAccountLine(fields)), 16);
+        for (var line = 1; line <= maxLine; line++)
+        {
+            if (!HasAccountData(fields, line))
+                continue;
+
+            var values = CreateConfigValuesForLine(fields, line);
+            var prefix = LineStoragePrefix(line);
+
+            foreach (var item in values)
+            {
+                _phone.ConfigFields[$"{prefix}{item.Key}"] = item.Value;
+                if (line == 1)
+                    _phone.ConfigFields[item.Key] = item.Value;
+            }
+        }
+    }
+
+    private static Dictionary<string, string> CreateConfigValuesForLine(Dictionary<string, string> fields, int line) => new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["LineEnabled"] = BoolValue(fields, true, AccountKeys(line, "enable")) ? "1" : "0",
+        ["LineLabel"] = ValueFrom(fields, string.Empty, AccountKeys(line, "label")),
+        ["DisplayName"] = ValueFrom(fields, string.Empty, AccountKeys(line, "display")),
+        ["RegisterName"] = ValueFrom(fields, string.Empty, AccountKeys(line, "register")),
+        ["UserName"] = ValueFrom(fields, string.Empty, AccountKeys(line, "user")),
+        ["SipServer1"] = ValueFrom(fields, "10.6.10.10", AccountKeys(line, "server1")),
+        ["SipPort1"] = ValueFrom(fields, "5060", AccountKeys(line, "port1")),
+        ["Transport1"] = TransportToCfgValue(ValueFrom(fields, "0", AccountKeys(line, "transport1"))),
+        ["ServerTimeout1"] = ValueFrom(fields, "3600", AccountKeys(line, "expires1")),
+        ["RetryCount1"] = ValueFrom(fields, "3", AccountKeys(line, "retry1")),
+        ["SipServer2"] = ValueFrom(fields, string.Empty, AccountKeys(line, "server2")),
+        ["SipPort2"] = ValueFrom(fields, "5060", AccountKeys(line, "port2")),
+        ["Transport2"] = TransportToCfgValue(ValueFrom(fields, "0", AccountKeys(line, "transport2"))),
+        ["ServerTimeout2"] = ValueFrom(fields, "3600", AccountKeys(line, "expires2")),
+        ["RetryCount2"] = ValueFrom(fields, "3", AccountKeys(line, "retry2"))
+    };
 
     private void ApplyStoredConfig(Dictionary<string, string> values)
     {
+        ResetConfigForm();
+
         _lineEnabled = BoolValue(values, _lineEnabled, "LineEnabled");
         _lineLabel = ValueFrom(values, _lineLabel, "LineLabel");
         _displayName = ValueFrom(values, _displayName, "DisplayName");
@@ -1032,6 +2139,26 @@ else
         _transport2 = StoredTransportValue(values, _transport2, "Transport2");
         _serverTimeout2 = IntValue(values, _serverTimeout2, "ServerTimeout2");
         _retryCount2 = IntValue(values, _retryCount2, "RetryCount2");
+    }
+
+    private void ResetConfigForm()
+    {
+        _lineEnabled = true;
+        _lineLabel = string.Empty;
+        _displayName = string.Empty;
+        _registerName = string.Empty;
+        _userName = string.Empty;
+        _password = string.Empty;
+        _sipServer1 = "10.6.10.10";
+        _sipPort1 = 5060;
+        _transport1 = "UDP";
+        _serverTimeout1 = 3600;
+        _retryCount1 = 3;
+        _sipServer2 = string.Empty;
+        _sipPort2 = 5060;
+        _transport2 = "UDP";
+        _serverTimeout2 = 3600;
+        _retryCount2 = 3;
     }
 
     private string DirtyMark(string key) => IsConfigChanged(key) ? "*" : string.Empty;
@@ -1083,12 +2210,49 @@ else
             if (!_loadedConfigValues.TryGetValue(key, out var loadedValue) ||
                 !string.Equals(value, loadedValue, StringComparison.Ordinal))
             {
-                changes[cfgKey] = value;
+                changes[CfgKeyForSelectedLine(cfgKey)] = value;
             }
         }
 
         return changes;
     }
+
+    private Dictionary<string, string> BuildEmptyAccountCfgValues(int line)
+    {
+        var changes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (key, cfgKey) in ConfigToCfgKey)
+        {
+            var value = key switch
+            {
+                "LineEnabled" => "0",
+                "SipPort1" => "5060",
+                "SipPort2" => "5060",
+                "Transport1" => "0",
+                "Transport2" => "0",
+                "ServerTimeout1" => "3600",
+                "ServerTimeout2" => "3600",
+                "RetryCount1" => "3",
+                "RetryCount2" => "3",
+                _ => string.Empty
+            };
+
+            changes[CfgKeyForLine(cfgKey, line)] = value;
+        }
+
+        changes[$"account.{line}.sip_server_host.legacy"] = string.Empty;
+        changes[$"account.{line}.sip_server.2.address"] = string.Empty;
+        changes[$"account.{line}.sip_server.2.port"] = "5060";
+        return changes;
+    }
+
+    private string CfgKeyForSelectedLine(string cfgKey) =>
+        CfgKeyForLine(cfgKey, _selectedAccountLine);
+
+    private static string CfgKeyForLine(string cfgKey, int line) =>
+        line <= 1
+            ? cfgKey
+            : cfgKey.Replace("account.1.", $"account.{line}.", StringComparison.OrdinalIgnoreCase);
 
     private async Task<string> SaveDeltaCfgAsync(Dictionary<string, string> changes)
     {
@@ -1098,7 +2262,7 @@ else
         var dir = Path.Combine(AppContext.BaseDirectory, "generated", SafePathSegment(_phone.IpAddress));
         Directory.CreateDirectory(dir);
 
-        var path = Path.Combine(dir, $"account-delta-{DateTime.Now:yyyyMMdd-HHmmss}.cfg");
+        var path = Path.Combine(dir, $"account-{_selectedAccountLine}-delta-{DateTime.Now:yyyyMMdd-HHmmss}.cfg");
         var lines = new List<string> { "#!version:1.0.0.1", string.Empty };
         lines.AddRange(changes.Select(x => $"{x.Key} = {x.Value}"));
 
@@ -1111,12 +2275,26 @@ else
         if (_phone == null)
             return false;
 
+        var family = ResolvePhoneFamily();
+        return family is YealinkPhoneFamily.ModernApi or YealinkPhoneFamily.WSeries || UsesModernHttps(_phone.Model);
+    }
+
+    private bool IsCallHistorySupported()
+    {
+        if (_phone == null)
+            return false;
+
+        return ResolvePhoneFamily() != YealinkPhoneFamily.WSeries &&
+            _phone.Model?.Contains("W70B", StringComparison.OrdinalIgnoreCase) != true;
+    }
+
+    private YealinkPhoneFamily ResolvePhoneFamily()
+    {
         var firmware = TryValue(out var cachedFirmware, "Firmware Version", "FirmwareVersion", "Firmware")
             ? cachedFirmware
             : null;
 
-        var family = ModelResolver.ResolveFamily(_phone.Model, firmware);
-        return family is YealinkPhoneFamily.ModernApi or YealinkPhoneFamily.WSeries || UsesModernHttps(_phone.Model);
+        return ModelResolver.ResolveFamily(_phone?.Model, firmware);
     }
 
     private static string NormalizeCfgValue(string? value) =>
@@ -1257,10 +2435,23 @@ else
             ? "-"
             : value;
 
+    private void LogPhoneAction(string action, string? details = null, bool success = true)
+    {
+        AuditLog.Log(
+            action,
+            AppAuth.CurrentUser?.Username ?? "system",
+            AppAuth.CurrentUser?.LocationName ?? string.Empty,
+            _phone?.IpAddress,
+            _phone?.Model,
+            details,
+            success);
+    }
+
     private void OpenWebInterface()
     {
         if (_phone != null)
         {
+            LogPhoneAction("Открытие веб-интерфейса");
             var scheme = UsesModernHttps(_phone.Model) ? "https" : "http";
             Navigation.NavigateTo($"{scheme}://{_phone.IpAddress}", forceLoad: true);
         }
@@ -1279,9 +2470,16 @@ else
         _ = InvokeAsync(StateHasChanged);
     }
 
+    private void OnStoreChanged()
+    {
+        _phone = Store.GetByIp(Ip) ?? _phone;
+        _ = InvokeAsync(StateHasChanged);
+    }
+
     public void Dispose()
     {
         Credentials.Changed -= OnCredentialsChanged;
+        Store.Changed -= OnStoreChanged;
     }
 
     private sealed record StatusSection(string Title, IReadOnlyList<StatusRow> Rows);

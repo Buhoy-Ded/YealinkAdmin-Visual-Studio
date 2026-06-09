@@ -12,6 +12,8 @@ public class PhoneStore
     private readonly ILogger<PhoneStore> _logger;
     private readonly SemaphoreSlim _saveLock = new(1, 1);
 
+    public event Action? Changed;
+
     public PhoneStore(ILogger<PhoneStore> logger)
     {
         _logger = logger;
@@ -20,19 +22,55 @@ public class PhoneStore
 
     public IEnumerable<PhoneInfo> All => _phones.Values.OrderBy(p => p.IpAddress);
 
-    public void Upsert(PhoneInfo phone) => _phones[phone.IpAddress] = phone;
+    public void Upsert(PhoneInfo phone)
+    {
+        _phones[phone.IpAddress] = phone;
+        NotifyChanged();
+    }
 
     public PhoneInfo? GetByIp(string ip) => _phones.GetValueOrDefault(ip);
 
     public void Remove(string ip)
     {
-        _phones.TryRemove(ip, out _);
+        if (_phones.TryRemove(ip, out _))
+            NotifyChanged();
     }
 
     public void Clear()
     {
         _phones.Clear();
         _logger.LogInformation("Cleared phone list");
+        NotifyChanged();
+    }
+
+    public bool UpdateReachability(IEnumerable<PhoneReachability> results)
+    {
+        var stateChanged = false;
+        var anyChanged = false;
+
+        foreach (var result in results)
+        {
+            if (!_phones.TryGetValue(result.IpAddress, out var phone))
+                continue;
+
+            if (phone.IsOnline != result.IsOnline)
+            {
+                phone.IsOnline = result.IsOnline;
+                stateChanged = true;
+                anyChanged = true;
+            }
+
+            if (phone.LastSeen != result.CheckedAtUtc)
+            {
+                phone.LastSeen = result.CheckedAtUtc;
+                anyChanged = true;
+            }
+        }
+
+        if (anyChanged)
+            NotifyChanged();
+
+        return stateChanged;
     }
 
     public async Task SaveAsync()
@@ -73,4 +111,8 @@ public class PhoneStore
             _logger.LogError(ex, "Failed to load phones.json");
         }
     }
+
+    private void NotifyChanged() => Changed?.Invoke();
 }
+
+public sealed record PhoneReachability(string IpAddress, bool IsOnline, DateTime CheckedAtUtc);

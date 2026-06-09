@@ -1,0 +1,578 @@
+@page "/settings"
+@inject AppUserStore UserStore
+@inject AppLocationStore LocationStore
+@inject AppAuthService AppAuth
+@inject AuditLogStore AuditLog
+@implements IDisposable
+@rendermode RenderMode.InteractiveServer
+
+<AppAuthRequired>
+    <section class="page-heading">
+        <div>
+            <p class="eyebrow">Администрирование</p>
+            <h1>Настройки</h1>
+        </div>
+        @if (_activeTab == "users")
+        {
+            <button class="btn primary" @onclick="StartCreateUser">Создать пользователя</button>
+        }
+        else if (_activeTab == "locations")
+        {
+            <button class="btn primary" @onclick="StartCreateLocation">Добавить локацию</button>
+        }
+        else
+        {
+            <button class="btn primary" @onclick="ExportAuditLogs">Экспорт TXT</button>
+        }
+    </section>
+
+    <div class="tabs settings-tabs">
+        <button class="@(_activeTab == "users" ? "active" : "")" @onclick='() => SelectTab("users")'>Пользователи</button>
+        <button class="@(_activeTab == "locations" ? "active" : "")" @onclick='() => SelectTab("locations")'>Локации</button>
+        <button class="@(_activeTab == "logs" ? "active" : "")" @onclick='() => SelectTab("logs")'>Логи</button>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_message))
+    {
+        <div class="alert alert-info">@_message</div>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="alert alert-danger">@_error</div>
+    }
+
+    @if (_activeTab == "users")
+    {
+        @if (_isEditingUser)
+        {
+            <section class="form-panel user-editor">
+                <div class="panel-title-row">
+                    <div>
+                        <h2>@(_isNewUser ? "Новый пользователь" : "Редактирование пользователя")</h2>
+                        <p>Пароль хранится только как hash. Оставьте пароль пустым, если его не нужно менять.</p>
+                    </div>
+                </div>
+
+                <div class="form-grid">
+                    <label>
+                        <span>Логин</span>
+                        <input type="text" @bind="_username" autocomplete="username" />
+                    </label>
+                    <label>
+                        <span>Отображаемое имя</span>
+                        <input type="text" @bind="_displayName" />
+                    </label>
+                    <label>
+                        <span>@(_isNewUser ? "Пароль" : "Новый пароль")</span>
+                        <input type="password" @bind="_password" autocomplete="new-password" />
+                    </label>
+                    <label class="switch-row">
+                        <span>Пользователь включён</span>
+                        <input type="checkbox" @bind="_enabled" />
+                    </label>
+                </div>
+
+                <div class="action-row">
+                    <button class="btn primary" @onclick="SaveUser">Сохранить</button>
+                    <button class="btn ghost" @onclick="CancelUserEdit">Отмена</button>
+                </div>
+            </section>
+        }
+
+        <section class="table-panel">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Логин</th>
+                        <th>Имя</th>
+                        <th>Последний вход</th>
+                        <th>Статус</th>
+                        <th>Доступ</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var user in _users)
+                    {
+                        <tr>
+                            <td><strong>@user.Username</strong></td>
+                            <td>@DisplayValue(user.DisplayName)</td>
+                            <td>@FormatDate(user.LastLoginAtUtc)</td>
+                            <td>
+                                @if (AppAuth.IsUserActive(user.Username))
+                                {
+                                    <span class="status-chip good">Активна сейчас</span>
+                                }
+                                else
+                                {
+                                    <span class="status-chip muted">Нет активной сессии</span>
+                                }
+                            </td>
+                            <td>
+                                @if (user.Enabled)
+                                {
+                                    <span class="status-chip good">Включён</span>
+                                }
+                                else
+                                {
+                                    <span class="status-chip warning">Отключён</span>
+                                }
+                            </td>
+                            <td class="table-actions">
+                                <button class="btn" @onclick="() => StartEditUser(user)">Редактировать</button>
+                                <button class="btn danger" @onclick="() => DeleteUser(user)">Удалить</button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </section>
+    }
+    else if (_activeTab == "locations")
+    {
+        @if (_isEditingLocation)
+        {
+            <section class="form-panel user-editor">
+                <div class="panel-title-row">
+                    <div>
+                        <h2>@(_isNewLocation ? "Новая локация" : "Редактирование локации")</h2>
+                        <p>Локации используются для выбора рабочего контекста пользователя.</p>
+                    </div>
+                </div>
+
+                <div class="form-grid">
+                    <label>
+                        <span>Название</span>
+                        <input type="text" @bind="_locationName" />
+                    </label>
+                    <label>
+                        <span>Описание</span>
+                        <input type="text" @bind="_locationDescription" />
+                    </label>
+                    <label class="wide-field">
+                        <span>Подсети телефонов</span>
+                        <textarea rows="4" placeholder="10.6.10.*&#10;10.6.10.0/24&#10;10.6.10.136" @bind="_locationSubnetRulesText"></textarea>
+                    </label>
+                    <label class="switch-row">
+                        <span>Локация включена</span>
+                        <input type="checkbox" @bind="_locationEnabled" />
+                    </label>
+                </div>
+
+                <div class="action-row">
+                    <button class="btn primary" @onclick="SaveLocation">Сохранить</button>
+                    <button class="btn ghost" @onclick="CancelLocationEdit">Отмена</button>
+                </div>
+            </section>
+        }
+
+        <section class="table-panel">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Название</th>
+                        <th>Описание</th>
+                        <th>Подсети</th>
+                        <th>Статус</th>
+                        <th>Создана</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var location in _locations)
+                    {
+                        <tr>
+                            <td><strong>@location.Name</strong></td>
+                            <td>@DisplayValue(location.Description)</td>
+                            <td>@DisplaySubnetRules(location)</td>
+                            <td>
+                                @if (location.Enabled)
+                                {
+                                    <span class="status-chip good">Включена</span>
+                                }
+                                else
+                                {
+                                    <span class="status-chip warning">Отключена</span>
+                                }
+                            </td>
+                            <td>@FormatDate(location.CreatedAtUtc)</td>
+                            <td class="table-actions">
+                                <button class="btn" @onclick="() => StartEditLocation(location)">Редактировать</button>
+                                <button class="btn danger" @onclick="() => DeleteLocation(location)">Удалить</button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </section>
+    }
+    else
+    {
+        @if (!string.IsNullOrWhiteSpace(_lastAuditExportPath))
+        {
+            <div class="alert alert-info">Экспорт сохранён: @_lastAuditExportPath</div>
+        }
+
+        <section class="table-panel">
+            <table class="data-table audit-table">
+                <thead>
+                    <tr>
+                        <th>Дата и время</th>
+                        <th>Пользователь</th>
+                        <th>Действие</th>
+                        <th>Телефон</th>
+                        <th>Объект</th>
+                        <th>Результат</th>
+                        <th>Детали</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var entry in _auditLogs.Take(300))
+                    {
+                        <tr>
+                            <td>@FormatDate(entry.OccurredAtUtc)</td>
+                            <td>@DisplayValue(entry.Username)</td>
+                            <td><strong>@entry.Action</strong></td>
+                            <td>@DisplayValue(entry.PhoneIp)</td>
+                            <td>@DisplayValue(entry.Target)</td>
+                            <td>
+                                @if (entry.Success)
+                                {
+                                    <span class="status-chip good">OK</span>
+                                }
+                                else
+                                {
+                                    <span class="status-chip warning">Ошибка</span>
+                                }
+                            </td>
+                            <td>@DisplayValue(entry.Details)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </section>
+        <p class="table-note">Показано: @_auditLogs.Take(300).Count() из @_auditLogs.Count</p>
+    }
+</AppAuthRequired>
+
+@code {
+    private string _activeTab = "users";
+    private string _message = string.Empty;
+    private string _error = string.Empty;
+
+    private List<AppUserRecord> _users = new();
+    private bool _isEditingUser;
+    private bool _isNewUser;
+    private string _originalUsername = string.Empty;
+    private string _username = string.Empty;
+    private string _displayName = string.Empty;
+    private string _password = string.Empty;
+    private bool _enabled = true;
+
+    private List<AppLocationRecord> _locations = new();
+    private List<AuditLogEntry> _auditLogs = new();
+    private bool _isEditingLocation;
+    private bool _isNewLocation;
+    private string _locationId = string.Empty;
+    private string _locationName = string.Empty;
+    private string _locationDescription = string.Empty;
+    private string _locationSubnetRulesText = string.Empty;
+    private bool _locationEnabled = true;
+    private string _lastAuditExportPath = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        UserStore.Changed += OnUsersChanged;
+        LocationStore.Changed += OnLocationsChanged;
+        AuditLog.Changed += OnAuditLogsChanged;
+        AppAuth.Changed += OnAuthChanged;
+        RefreshUsers();
+        RefreshLocations();
+        RefreshAuditLogs();
+    }
+
+    private void SelectTab(string tab)
+    {
+        _activeTab = tab;
+        _message = string.Empty;
+        _error = string.Empty;
+    }
+
+    private void StartCreateUser()
+    {
+        _isEditingUser = true;
+        _isNewUser = true;
+        _originalUsername = string.Empty;
+        _username = string.Empty;
+        _displayName = string.Empty;
+        _password = string.Empty;
+        _enabled = true;
+        ClearMessages();
+    }
+
+    private void StartEditUser(AppUserRecord user)
+    {
+        _isEditingUser = true;
+        _isNewUser = false;
+        _originalUsername = user.Username;
+        _username = user.Username;
+        _displayName = user.DisplayName;
+        _password = string.Empty;
+        _enabled = user.Enabled;
+        ClearMessages();
+    }
+
+    private void SaveUser()
+    {
+        ClearMessages();
+
+        var result = _isNewUser
+            ? UserStore.CreateUser(_username, _displayName, _password, _enabled)
+            : UserStore.UpdateUser(_originalUsername, _username, _displayName, _password, _enabled);
+
+        if (!result.Success)
+        {
+            _error = result.Message;
+            return;
+        }
+
+        var currentUser = AppAuth.CurrentUser?.Username;
+        var changedCurrentLogin = !_isNewUser &&
+            currentUser != null &&
+            currentUser.Equals(_originalUsername, StringComparison.OrdinalIgnoreCase) &&
+            !_originalUsername.Equals(_username.Trim(), StringComparison.OrdinalIgnoreCase);
+        var disabledCurrentUser = !_isNewUser &&
+            currentUser != null &&
+            currentUser.Equals(_originalUsername, StringComparison.OrdinalIgnoreCase) &&
+            !_enabled;
+
+        _message = _isNewUser ? "Пользователь создан." : "Пользователь обновлён.";
+        AuditLog.Log(
+            _isNewUser ? "Создание пользователя" : "Редактирование пользователя",
+            CurrentAuditUser(),
+            CurrentAuditLocation(),
+            target: _username.Trim(),
+            details: _isNewUser ? "Добавлен пользователь приложения." : "Обновлены данные пользователя приложения.");
+        _isEditingUser = false;
+        _password = string.Empty;
+        RefreshUsers();
+
+        if (changedCurrentLogin || disabledCurrentUser)
+        {
+            AppAuth.Logout();
+            _message = "Пользователь обновлён. Текущая сессия завершена, войдите заново.";
+        }
+    }
+
+    private void CancelUserEdit()
+    {
+        _isEditingUser = false;
+        _password = string.Empty;
+        _error = string.Empty;
+    }
+
+    private void DeleteUser(AppUserRecord user)
+    {
+        ClearMessages();
+
+        var currentUser = AppAuth.CurrentUser?.Username;
+        var deletesCurrentUser = currentUser != null &&
+            currentUser.Equals(user.Username, StringComparison.OrdinalIgnoreCase);
+
+        var result = UserStore.DeleteUser(user.Username);
+        if (!result.Success)
+        {
+            _error = result.Message;
+            return;
+        }
+
+        _isEditingUser = false;
+        _password = string.Empty;
+        RefreshUsers();
+
+        if (deletesCurrentUser)
+        {
+            AppAuth.Logout();
+            _message = "Пользователь удалён. Текущая сессия завершена.";
+        }
+        else
+        {
+            _message = "Пользователь удалён.";
+        }
+
+        AuditLog.Log(
+            "Удаление пользователя",
+            CurrentAuditUser(),
+            CurrentAuditLocation(),
+            target: user.Username,
+            details: "Пользователь приложения удалён.");
+    }
+
+    private void StartCreateLocation()
+    {
+        _isEditingLocation = true;
+        _isNewLocation = true;
+        _locationId = string.Empty;
+        _locationName = string.Empty;
+        _locationDescription = string.Empty;
+        _locationSubnetRulesText = "10.6.10.*";
+        _locationEnabled = true;
+        ClearMessages();
+    }
+
+    private void StartEditLocation(AppLocationRecord location)
+    {
+        _isEditingLocation = true;
+        _isNewLocation = false;
+        _locationId = location.Id;
+        _locationName = location.Name;
+        _locationDescription = location.Description;
+        _locationSubnetRulesText = FormatSubnetRules(location.SubnetRules);
+        _locationEnabled = location.Enabled;
+        ClearMessages();
+    }
+
+    private void SaveLocation()
+    {
+        ClearMessages();
+
+        var result = _isNewLocation
+            ? LocationStore.CreateLocation(_locationName, _locationDescription, _locationEnabled, ParseSubnetRules(_locationSubnetRulesText))
+            : LocationStore.UpdateLocation(_locationId, _locationName, _locationDescription, _locationEnabled, ParseSubnetRules(_locationSubnetRulesText));
+
+        if (!result.Success)
+        {
+            _error = result.Message;
+            return;
+        }
+
+        _message = _isNewLocation ? "Локация создана." : "Локация обновлена.";
+        AuditLog.Log(
+            _isNewLocation ? "Создание локации" : "Редактирование локации",
+            CurrentAuditUser(),
+            CurrentAuditLocation(),
+            target: _locationName.Trim(),
+            details: $"Подсети: {string.Join(", ", ParseSubnetRules(_locationSubnetRulesText))}");
+        _isEditingLocation = false;
+        RefreshLocations();
+    }
+
+    private void CancelLocationEdit()
+    {
+        _isEditingLocation = false;
+        _error = string.Empty;
+    }
+
+    private void DeleteLocation(AppLocationRecord location)
+    {
+        ClearMessages();
+
+        var result = LocationStore.DeleteLocation(location.Id);
+        if (!result.Success)
+        {
+            _error = result.Message;
+            return;
+        }
+
+        _isEditingLocation = false;
+        RefreshLocations();
+        _message = "Локация удалена.";
+        AuditLog.Log(
+            "Удаление локации",
+            CurrentAuditUser(),
+            CurrentAuditLocation(),
+            target: location.Name,
+            details: $"Подсети: {DisplaySubnetRules(location)}");
+    }
+
+    private void RefreshUsers()
+    {
+        _users = UserStore.All.ToList();
+    }
+
+    private void RefreshLocations()
+    {
+        _locations = LocationStore.All.ToList();
+    }
+
+    private void RefreshAuditLogs()
+    {
+        _auditLogs = AuditLog.All.ToList();
+    }
+
+    private void OnUsersChanged()
+    {
+        RefreshUsers();
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void OnLocationsChanged()
+    {
+        RefreshLocations();
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void OnAuditLogsChanged()
+    {
+        RefreshAuditLogs();
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void OnAuthChanged()
+    {
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void ClearMessages()
+    {
+        _message = string.Empty;
+        _error = string.Empty;
+    }
+
+    private void ExportAuditLogs()
+    {
+        ClearMessages();
+        try
+        {
+            _lastAuditExportPath = AuditLog.ExportTxt();
+            AuditLog.Log("Экспорт логов", CurrentAuditUser(), CurrentAuditLocation(), target: _lastAuditExportPath);
+            RefreshAuditLogs();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Ошибка экспорта логов: {ex.Message}";
+        }
+    }
+
+    private string CurrentAuditUser() => AppAuth.CurrentUser?.Username ?? "system";
+
+    private string CurrentAuditLocation() => AppAuth.CurrentUser?.LocationName ?? string.Empty;
+
+    private static string DisplayValue(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "-" : value;
+
+    private static string DisplaySubnetRules(AppLocationRecord location) =>
+        location.SubnetRules.Count == 0 ? "Все подсети" : string.Join(", ", location.SubnetRules);
+
+    private static IReadOnlyList<string> ParseSubnetRules(string text) =>
+        (text ?? string.Empty)
+            .Split(new[] { '\r', '\n', ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private static string FormatSubnetRules(IEnumerable<string> rules) =>
+        string.Join(Environment.NewLine, rules);
+
+    private static string FormatDate(DateTime? value) =>
+        value.HasValue ? value.Value.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss") : "-";
+
+    public void Dispose()
+    {
+        UserStore.Changed -= OnUsersChanged;
+        LocationStore.Changed -= OnLocationsChanged;
+        AuditLog.Changed -= OnAuditLogsChanged;
+        AppAuth.Changed -= OnAuthChanged;
+    }
+}

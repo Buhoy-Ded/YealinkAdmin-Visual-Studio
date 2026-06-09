@@ -1,0 +1,33 @@
+@inject AppAuthService AppAuth
+@implements IDisposable
+
+@if (AppAuth.IsAuthenticated)
+{
+    @ChildContent
+}
+else
+{
+    <section class="empty-state">
+        <h1>Вход в Yealink Admin</h1>
+        <p>Авторизуйтесь в левом нижнем углу, чтобы открыть инвентарь и управление телефонами.</p>
+    </section>
+}
+
+@code {
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    protected override void OnInitialized()
+    {
+        AppAuth.Changed += OnAuthChanged;
+    }
+
+    private void OnAuthChanged()
+    {
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        AppAuth.Changed -= OnAuthChanged;
+    }
+}

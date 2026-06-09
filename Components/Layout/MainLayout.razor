@@ -12,7 +12,11 @@
 
         <nav class="nav-menu">
             <NavLink href="/" Match="NavLinkMatch.All">Телефоны</NavLink>
+            <NavLink href="/settings">Настройки</NavLink>
         </nav>
+
+        <div class="sidebar-spacer"></div>
+        <AppAuthPanel />
     </aside>
 
     <main class="app-main">
@@ -22,7 +26,7 @@
                 <div class="header-title">Yealink</div>
             </div>
             <div class="header-actions">
-                <AdminModeButton />
+                <HeaderAuthActions />
             </div>
         </header>
 

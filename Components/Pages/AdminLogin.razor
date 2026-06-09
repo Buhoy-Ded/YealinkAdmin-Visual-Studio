@@ -3,6 +3,7 @@
 @inject NavigationManager Navigation
 @rendermode RenderMode.InteractiveServer
 
+<AppAuthRequired>
 <section class="page-heading">
     <div>
         <p class="eyebrow">Креды телефонов</p>
@@ -32,6 +33,8 @@
         <button class="btn ghost" @onclick='() => Navigation.NavigateTo("/")'>Отмена</button>
     </div>
 </section>
+
+</AppAuthRequired>
 
 @code {
     private string _username = string.Empty;

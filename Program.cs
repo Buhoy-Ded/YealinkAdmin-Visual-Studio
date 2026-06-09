@@ -11,6 +11,10 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
 builder.Services.AddSingleton<SecureCredentialStorage>();
+builder.Services.AddSingleton<AppUserStore>();
+builder.Services.AddSingleton<AppLocationStore>();
+builder.Services.AddSingleton<AuditLogStore>();
+builder.Services.AddSingleton<AppAuthService>();
 builder.Services.AddSingleton<PhoneStore>();
 builder.Services.AddSingleton<YealinkApiClient>();
 builder.Services.AddSingleton<YealinkScanner>();
@@ -20,6 +24,7 @@ builder.Services.AddSingleton<YealinkStatusClient>();
 builder.Services.AddSingleton<YealinkModernStatusParser>();
 builder.Services.AddSingleton<YealinkModernApiClient>();
 builder.Services.AddSingleton<YealinkActionUriFixer>();
+builder.Services.AddHostedService<PhoneStatusMonitor>();
 
 builder.Services.AddHttpClient("yealink", client =>
 {
@@ -56,5 +61,14 @@ app.MapRazorComponents<App>()
 
 var store = app.Services.GetRequiredService<PhoneStore>();
 store.Load();
+
+var locationStore = app.Services.GetRequiredService<AppLocationStore>();
+locationStore.Load();
+
+var auditLogStore = app.Services.GetRequiredService<AuditLogStore>();
+auditLogStore.Load();
+
+var userStore = app.Services.GetRequiredService<AppUserStore>();
+userStore.Load();
 
 app.Run();

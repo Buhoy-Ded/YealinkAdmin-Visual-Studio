@@ -30,6 +30,7 @@ public class PhoneStatus
 public class AccountStatus
 {
     public int Line { get; set; }
+    public bool IsDefault { get; set; }
     public string? Number { get; set; }
     public string? Label { get; set; }
     public string? Status { get; set; }

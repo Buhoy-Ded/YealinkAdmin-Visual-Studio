@@ -1,0 +1,25 @@
+@inject AppAuthService AppAuth
+@implements IDisposable
+@rendermode RenderMode.InteractiveServer
+
+@if (AppAuth.IsAuthenticated)
+{
+    <AdminModeButton />
+}
+
+@code {
+    protected override void OnInitialized()
+    {
+        AppAuth.Changed += OnAuthChanged;
+    }
+
+    private void OnAuthChanged()
+    {
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        AppAuth.Changed -= OnAuthChanged;
+    }
+}

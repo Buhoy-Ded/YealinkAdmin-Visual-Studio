@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -288,6 +289,145 @@ public sealed class YealinkModernApiClient
         }
 
         return new AccountConfigResult(fields, string.Join(Environment.NewLine + Environment.NewLine, parts));
+    }
+
+    public async Task<ExpansionPanelInfo> GetExpansionPanelAsync(
+        string ip,
+        string username,
+        string password,
+        CancellationToken ct = default)
+    {
+        var cookies = new CookieContainer();
+        using var http = CreateHttpClient(ip, cookies);
+        ApplyBrowserHeaders(http);
+
+        var session = await LoginCoreAsync(http, ip, username, password, ct);
+        if (string.IsNullOrWhiteSpace(session.CsrfToken))
+            throw new InvalidOperationException("Modern API token not found, DSSKeyExp cannot be loaded.");
+
+        using (var warmup = await PostJsonAsync(http, $"/api/common/info?p=DSSKeyExp&t={Ts()}", new { idlist = new[] { "wui" } }, session.CsrfToken, ct))
+        {
+            _ = await warmup.Content.ReadAsStringAsync(ct);
+        }
+
+        using var info = await CreateRequestAsync(
+            http,
+            HttpMethod.Get,
+            $"/api/dsskey/info?model=expkey&expno=1&p=DSSKeyExp&t={Ts()}",
+            session.CsrfToken,
+            ct);
+        var body = await info.Content.ReadAsStringAsync(ct);
+
+        if (!info.IsSuccessStatusCode)
+            return new ExpansionPanelInfo();
+
+        using var doc = ParseJsonDocument(body, info);
+        var panel = ParseExpansionPanel(doc.RootElement);
+
+        try
+        {
+            using var config = await PostJsonAsync(
+                http,
+                $"/api/inner/readconfig?p=DSSKeyExp&t={Ts()}",
+                new
+                {
+                    formData = new[] { "EnablePageTips", "DsskeyLength", "DsskeyLengthShorten" },
+                    extData = new[] { "MuteMode", "AutoLinekeysSwitch", "EnableAutoFavorite", "AutoBlfListEnable" }
+                },
+                session.CsrfToken,
+                ct);
+            _ = await config.Content.ReadAsStringAsync(ct);
+        }
+        catch
+        {
+            // EXP metadata is useful, but readconfig is not required for detection.
+        }
+
+        return panel;
+    }
+
+    public async Task<List<CallHistoryEntry>> GetCallHistoryAsync(
+        string ip,
+        string username,
+        string password,
+        CancellationToken ct = default)
+    {
+        var cookies = new CookieContainer();
+        using var http = CreateHttpClient(ip, cookies);
+        ApplyBrowserHeaders(http);
+
+        var session = await LoginCoreAsync(http, ip, username, password, ct);
+        if (session.Family == YealinkPhoneFamily.WSeries)
+            return new List<CallHistoryEntry>();
+
+        using (var warmup = await PostJsonAsync(http, $"/api/common/info?p=ContactsCalllog&t={Ts()}", new { idlist = new[] { "wui" } }, session.CsrfToken, ct))
+        {
+            _ = await warmup.Content.ReadAsStringAsync(ct);
+        }
+
+        using var response = await CreateRequestAsync(http, HttpMethod.Get, $"/api/contacts/calllog?type=0&p=ContactsCalllog&t={Ts()}", session.CsrfToken, ct);
+        using var doc = await ReadJsonDocumentAsync(response, ct);
+        return ParseModernCallHistory(doc.RootElement);
+    }
+
+    public async Task<bool> RebootAsync(
+        string ip,
+        string username,
+        string password,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var cookies = new CookieContainer();
+            using var http = CreateHttpClient(ip, cookies);
+            ApplyBrowserHeaders(http);
+
+            var session = await LoginCoreAsync(http, ip, username, password, ct);
+            if (string.IsNullOrWhiteSpace(session.CsrfToken))
+                return false;
+
+            try
+            {
+                using var talking = await CreateRequestAsync(
+                    http,
+                    HttpMethod.Get,
+                    $"/api/common/info/status/talking?p=SettingUpgrade&t={Ts()}",
+                    session.CsrfToken,
+                    ct);
+                using var talkingDoc = await ReadJsonDocumentAsync(talking, ct);
+
+                if (TryFindElement(talkingDoc.RootElement, "data", out var data) &&
+                    data.ValueKind == JsonValueKind.True)
+                {
+                    _logger.LogWarning("Modern API reboot skipped for {Ip}: phone is in active call", ip);
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Modern API talking status check failed for {Ip}; sending reboot anyway", ip);
+            }
+
+            using var response = await CreateRequestAsync(
+                http,
+                HttpMethod.Post,
+                $"/api/system/reboot?p=SettingUpgrade&t={Ts()}",
+                session.CsrfToken,
+                ct);
+            using var doc = await ReadJsonDocumentAsync(response, ct);
+
+            return IsModernRebootAccepted(doc.RootElement);
+        }
+        catch (Exception ex) when (IsConnectionReset(ex))
+        {
+            _logger.LogInformation(ex, "Modern API reboot request for {Ip} closed the connection; treating it as accepted", ip);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Modern API reboot failed for {Ip}", ip);
+            return false;
+        }
     }
 
     public async Task<OperationResult> ExportCfgAsync(
@@ -596,35 +736,53 @@ public sealed class YealinkModernApiClient
         };
     }
 
-    private static string[] GetAccountRegisterKeys() =>
-    [
-        "AccountEnable.1",
-        "AccountLabel.1",
-        "AccountDisplayName.1",
-        "AccountRegisterName.1",
-        "AccountUserName.1",
-        "AccountPassword.1",
-        "AccountServerAddr1.1",
-        "AccountServerPort1.1",
-        "AccountServerTransport1.1",
-        "AccountServerExpires1.1",
-        "AccountServerRetryCounts1.1",
-        "AccountServerAddr2.1",
-        "AccountServerPort2.1",
-        "AccountServerTransport2.1",
-        "AccountServerExpires2.1",
-        "AccountServerRetryCounts2.1",
-        "AccountServerAddr.1.1",
-        "AccountServerPort.1.1",
-        "AccountServerTransport.1.1",
-        "AccountServerExpires.1.1",
-        "AccountServerRetryCounts.1.1",
-        "AccountServerAddr.1.2",
-        "AccountServerPort.1.2",
-        "AccountServerTransport.1.2",
-        "AccountServerExpires.1.2",
-        "AccountServerRetryCounts.1.2"
-    ];
+    private static string[] GetAccountRegisterKeys()
+    {
+        var keys = new List<string>();
+
+        for (var line = 1; line <= 16; line++)
+        {
+            keys.AddRange([
+                $"AccountEnable.{line}",
+                $"AccountLabel.{line}",
+                $"AccountDisplayName.{line}",
+                $"AccountRegisterName.{line}",
+                $"AccountUserName.{line}",
+                $"AccountPassword.{line}",
+                $"AccountServerAddr1.{line}",
+                $"AccountServerPort1.{line}",
+                $"AccountServerTransport1.{line}",
+                $"AccountServerExpires1.{line}",
+                $"AccountServerRetryCounts1.{line}",
+                $"AccountServerAddr2.{line}",
+                $"AccountServerPort2.{line}",
+                $"AccountServerTransport2.{line}",
+                $"AccountServerExpires2.{line}",
+                $"AccountServerRetryCounts2.{line}",
+                $"AccountServerAddr.{line}.1",
+                $"AccountServerPort.{line}.1",
+                $"AccountServerTransport.{line}.1",
+                $"AccountServerExpires.{line}.1",
+                $"AccountServerRetryCounts.{line}.1",
+                $"AccountServerAddr.{line}.2",
+                $"AccountServerPort.{line}.2",
+                $"AccountServerTransport.{line}.2",
+                $"AccountServerExpires.{line}.2",
+                $"AccountServerRetryCounts.{line}.2"
+            ]);
+        }
+
+        keys.AddRange([
+            "DefaultAccount",
+            "AccountDefault",
+            "DefaultAccountLine",
+            "PhoneDefaultAccount",
+            "account.default",
+            "account.default_line"
+        ]);
+
+        return keys.ToArray();
+    }
 
     private static void AddJsonFields(Dictionary<string, string> fields, string rawJson)
     {
@@ -727,6 +885,104 @@ public sealed class YealinkModernApiClient
         }
     }
 
+    private static ExpansionPanelInfo ParseExpansionPanel(JsonElement root)
+    {
+        var count = ParseInt(FindString(root, "EXP_DEV_NUM", "data.EXP_DEV_NUM")) ?? 0;
+        var type = FindString(root, "expinfo.type", "data.expinfo.type", "type") ?? string.Empty;
+        var panel = new ExpansionPanelInfo
+        {
+            Count = count,
+            Type = type,
+            IsDetected = count > 0 || !string.IsNullOrWhiteSpace(type)
+        };
+
+        if (TryFindElement(root, "expkey", out var keys) && keys.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var key in keys.EnumerateArray())
+            {
+                var item = new ExpansionKeyInfo
+                {
+                    Index = ParseInt(FindString(key, "index")) ?? panel.Keys.Count + 1,
+                    Id = FindString(key, "id") ?? string.Empty,
+                    KeyName = FindString(key, "keyname") ?? string.Empty,
+                    Type = FindString(key, "type") ?? string.Empty,
+                    Line = FindString(key, "line") ?? string.Empty,
+                    Value = FindString(key, "value") ?? string.Empty,
+                    Extension = FindString(key, "extension") ?? string.Empty,
+                    Label = FindString(key, "label") ?? string.Empty
+                };
+
+                panel.Keys.Add(item);
+            }
+        }
+
+        if (panel.Keys.Count > 0)
+            panel.IsDetected = true;
+
+        return panel;
+    }
+
+    private static List<CallHistoryEntry> ParseModernCallHistory(JsonElement root)
+    {
+        var result = new List<CallHistoryEntry>();
+        if (!TryFindElement(root, "calls", out var calls) || calls.ValueKind != JsonValueKind.Array)
+            return result;
+
+        foreach (var call in calls.EnumerateArray())
+        {
+            result.Add(new CallHistoryEntry
+            {
+                Type = FormatCallType(FindString(call, "type")),
+                LocalName = FindString(call, "local_name") ?? string.Empty,
+                LocalServer = FindString(call, "local_server") ?? string.Empty,
+                RemoteDisplay = FindString(call, "remote_display") ?? string.Empty,
+                RemoteName = FindString(call, "remote_name") ?? string.Empty,
+                RemoteServer = FindString(call, "remote_server") ?? string.Empty,
+                DateTimeText = FormatCallDateTime(FindString(call, "datetime")),
+                Duration = FormatCallDuration(FindString(call, "duration")),
+                NumberOfTimes = FindString(call, "number_of_times") ?? string.Empty
+            });
+        }
+
+        return result;
+    }
+
+    private static string FormatCallType(string? type) => type?.Trim() switch
+    {
+        "1" => "Исходящий",
+        "2" => "Принятый",
+        "3" => "Пропущенный",
+        "4" => "Переадресованный",
+        _ => string.IsNullOrWhiteSpace(type) ? "-" : type.Trim()
+    };
+
+    private static string FormatCallDateTime(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        return DateTime.TryParseExact(value.Trim(), "yyyy.MM.dd_HH.mm.ss", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
+            ? parsed.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
+            : value.Trim();
+    }
+
+    private static string FormatCallDuration(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        if (TimeSpan.TryParse(value.Trim(), CultureInfo.InvariantCulture, out var time))
+            return time.ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
+
+        if (int.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds))
+            return TimeSpan.FromSeconds(seconds).ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
+
+        return value.Trim();
+    }
+
+    private static int? ParseInt(string? value) =>
+        int.TryParse(value, out var parsed) ? parsed : null;
+
     private static bool IsLoginSuccess(JsonElement root)
     {
         var ret = FindString(root, "ret", "result");
@@ -743,6 +999,40 @@ public sealed class YealinkModernApiClient
         }
 
         return ret?.Equals("ok", StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    private static bool IsModernRebootAccepted(JsonElement root)
+    {
+        var ret = FindString(root, "ret", "result");
+        if (!string.IsNullOrWhiteSpace(ret) && !ret.Equals("ok", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (TryFindElement(root, "data", out var data))
+        {
+            if (data.ValueKind == JsonValueKind.True)
+                return true;
+
+            if (data.ValueKind == JsonValueKind.String &&
+                bool.TryParse(data.GetString(), out var parsed))
+                return parsed;
+
+            return false;
+        }
+
+        return ret?.Equals("ok", StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    private static bool IsConnectionReset(Exception ex)
+    {
+        var messages = new List<string>();
+        for (var current = ex; current != null; current = current.InnerException)
+            messages.Add(current.Message);
+
+        var text = string.Join(" / ", messages);
+        return text.Contains("forcibly closed", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("connection reset", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("принудительно разорвал", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("Удаленный хост", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? FindString(JsonElement root, params string[] names)

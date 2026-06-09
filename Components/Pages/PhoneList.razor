@@ -8,9 +8,15 @@
 @inject YealinkApiClient ApiClient
 @inject YealinkStatusClient StatusClient
 @inject YealinkConfigManager ConfigManager
+@inject YealinkModernApiClient ModernApiClient
+@inject IJSRuntime JS
+@inject AppAuthService AppAuth
+@inject AppLocationStore LocationStore
+@inject AuditLogStore AuditLog
 @implements IDisposable
 @rendermode RenderMode.InteractiveServer
 
+<AppAuthRequired>
 <section class="page-heading">
     <div>
         <p class="eyebrow">Инвентарь</p>
@@ -21,19 +27,19 @@
 <section class="summary-grid">
     <div class="metric">
         <span>Всего</span>
-        <strong>@_phones.Count</strong>
+        <strong>@LocationPhones.Count()</strong>
     </div>
     <div class="metric">
         <span>Онлайн</span>
-        <strong>@_phones.Count(p => p.IsOnline)</strong>
+        <strong>@LocationPhones.Count(p => p.IsOnline)</strong>
     </div>
     <div class="metric warning">
         <span>Action URI</span>
-        <strong>@_phones.Count(p => p.IsForbidden)</strong>
+        <strong>@LocationPhones.Count(p => p.IsForbidden)</strong>
     </div>
     <div class="metric">
         <span>Выбрано</span>
-        <strong>@_selectedPhones.Count</strong>
+        <strong>@VisibleSelectedCount</strong>
     </div>
 </section>
 
@@ -45,10 +51,10 @@
         <button class="btn" @onclick="StartScanAll" disabled="@(_scanning || !Credentials.IsAdminConfigured)">
             Обновить список
         </button>
-        <button class="btn secondary" @onclick="RebootSelected" disabled="@(!_selectedPhones.Any() || _scanning || _rebooting || !Credentials.IsAdminConfigured)">
+        <button class="btn secondary" @onclick="RebootSelected" disabled="@(VisibleSelectedCount == 0 || _scanning || _rebooting || !Credentials.IsAdminConfigured)">
             @(_rebooting ? "Перезагрузка..." : "Перезагрузить")
         </button>
-        <button class="btn danger" @onclick="DeleteSelected" disabled="@(!_selectedPhones.Any() || _scanning)">
+        <button class="btn danger" @onclick="DeleteSelected" disabled="@(VisibleSelectedCount == 0 || _scanning)">
             Удалить выбранные
         </button>
     </div>
@@ -122,11 +128,11 @@
                         <td>@(phone.Model ?? "Не определена")</td>
                         <td>@DisplayValue(phone.MacAddress)</td>
                         <td>@DisplayValue(phone.SerialNumber)</td>
-                        <td>@phone.Account</td>
+                        <td>@AccountSummary(phone)</td>
                         <td>
                             @if (phone.IsForbidden)
                             {
-                                <span class="status-chip warning">Нужен Action URI</span>
+                                <span class="status-chip warning">@(phone.IsOnline ? "Онлайн / Action URI" : "Оффлайн / Action URI")</span>
                             }
                             else if (phone.IsOnline)
                             {
@@ -134,7 +140,7 @@
                             }
                             else
                             {
-                                <span class="status-chip muted">Из кэша</span>
+                                <span class="status-chip muted">Оффлайн</span>
                             }
                         </td>
                         <td>@phone.LastSeen.ToLocalTime().ToString("dd.MM HH:mm:ss")</td>
@@ -143,7 +149,7 @@
             </tbody>
         </table>
     </section>
-    <p class="table-note">Показано: @FilteredPhones.Count() из @_phones.Count</p>
+    <p class="table-note">Показано: @FilteredPhones.Count() из @LocationPhones.Count()</p>
 }
 else if (!_scanning)
 {
@@ -152,6 +158,8 @@ else if (!_scanning)
         <p>Войдите в админ-режим и запустите сканирование.</p>
     </section>
 }
+
+</AppAuthRequired>
 
 @code {
     private List<PhoneInfo> _phones = new();
@@ -169,11 +177,17 @@ else if (!_scanning)
     private string _manualResult = string.Empty;
     private bool _rebooting;
 
+    private IEnumerable<PhoneInfo> LocationPhones =>
+        _phones.Where(IsInSelectedLocation);
+
+    private int VisibleSelectedCount =>
+        LocationPhones.Count(phone => _selectedPhones.Contains(phone.IpAddress));
+
     private IEnumerable<PhoneInfo> FilteredPhones
     {
         get
         {
-            var query = _phones.AsEnumerable();
+            var query = LocationPhones;
             if (!string.IsNullOrWhiteSpace(_searchText))
             {
                 var search = _searchText.Trim();
@@ -218,7 +232,11 @@ else if (!_scanning)
     protected override void OnInitialized()
     {
         Credentials.Changed += OnCredentialsChanged;
+        Store.Changed += OnStoreChanged;
+        AppAuth.Changed += OnAppAuthChanged;
+        LocationStore.Changed += OnLocationsChanged;
         _phones = Store.All.ToList();
+        PruneSelectionForLocation();
     }
 
     private void SortBy(string column)
@@ -250,20 +268,45 @@ else if (!_scanning)
     private void ToggleSelectAll()
     {
         var filtered = FilteredPhones.ToList();
-        if (_selectedPhones.Count == filtered.Count)
-            _selectedPhones.Clear();
+        var selectedInFiltered = filtered.Count(p => _selectedPhones.Contains(p.IpAddress));
+        if (filtered.Count > 0 && selectedInFiltered == filtered.Count)
+        {
+            foreach (var phone in filtered)
+                _selectedPhones.Remove(phone.IpAddress);
+        }
         else
-            _selectedPhones = new HashSet<string>(filtered.Select(p => p.IpAddress));
+        {
+            foreach (var phone in filtered)
+                _selectedPhones.Add(phone.IpAddress);
+        }
     }
 
     private async Task DeleteSelected()
     {
-        foreach (var ip in _selectedPhones)
-            Store.Remove(ip);
+        var selectedPhones = LocationPhones
+            .Where(phone => _selectedPhones.Contains(phone.IpAddress))
+            .ToList();
+        if (selectedPhones.Count == 0)
+            return;
 
-        _selectedPhones.Clear();
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            $"Удалить выбранные телефоны из списка? Количество: {selectedPhones.Count}.");
+        if (!confirmed)
+            return;
+
+        foreach (var phone in selectedPhones)
+            Store.Remove(phone.IpAddress);
+
+        foreach (var phone in selectedPhones)
+            _selectedPhones.Remove(phone.IpAddress);
         _phones = Store.All.ToList();
         await Store.SaveAsync();
+        AuditLog.Log(
+            "Удаление телефонов из списка",
+            CurrentAuditUser(),
+            CurrentAuditLocation(),
+            details: $"Количество: {selectedPhones.Count}. IP: {string.Join(", ", selectedPhones.Select(x => x.IpAddress).Take(20))}");
     }
 
     private async Task RebootSelected()
@@ -275,35 +318,47 @@ else if (!_scanning)
             return;
         }
 
-        var selectedIps = _selectedPhones.ToList();
-        if (selectedIps.Count == 0)
+        var selectedPhones = LocationPhones
+            .Where(phone => _selectedPhones.Contains(phone.IpAddress))
+            .ToList();
+        if (selectedPhones.Count == 0)
+            return;
+
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            $"Перезагрузить выбранные телефоны? Количество: {selectedPhones.Count}.");
+        if (!confirmed)
             return;
 
         _rebooting = true;
-        _lastScanLog = $"Отправка команды reboot: {selectedIps.Count} телефонов...";
+        _lastScanLog = $"Отправка команды reboot: {selectedPhones.Count} телефонов...";
         await InvokeAsync(StateHasChanged);
 
         var success = 0;
         var failed = new List<string>();
 
-        await Parallel.ForEachAsync(selectedIps, new ParallelOptions { MaxDegreeOfParallelism = 8 }, async (ip, ct) =>
+        await Parallel.ForEachAsync(selectedPhones, new ParallelOptions { MaxDegreeOfParallelism = 8 }, async (phone, ct) =>
         {
             try
             {
-                if (await ConfigManager.RebootAsync(ip, creds.Value.username, creds.Value.password))
+                var rebooted = IsModernRebootPhone(phone)
+                    ? await ModernApiClient.RebootAsync(phone.IpAddress, creds.Value.username, creds.Value.password, ct)
+                    : await ConfigManager.RebootAsync(phone.IpAddress, creds.Value.username, creds.Value.password);
+
+                if (rebooted)
                 {
                     Interlocked.Increment(ref success);
                 }
                 else
                 {
                     lock (failed)
-                        failed.Add(ip);
+                        failed.Add(phone.IpAddress);
                 }
             }
             catch
             {
                 lock (failed)
-                    failed.Add(ip);
+                    failed.Add(phone.IpAddress);
             }
         });
 
@@ -311,8 +366,35 @@ else if (!_scanning)
         _lastScanLog = failed.Count == 0
             ? $"Команда reboot отправлена: {success}."
             : $"Команда reboot отправлена: {success}. Ошибки: {failed.Count} ({string.Join(", ", failed.Take(8))}{(failed.Count > 8 ? ", ..." : "")})";
+        AuditLog.Log(
+            "Перезагрузка телефонов",
+            CurrentAuditUser(),
+            CurrentAuditLocation(),
+            details: $"Успешно: {success}. Ошибки: {failed.Count}. IP: {string.Join(", ", selectedPhones.Select(x => x.IpAddress).Take(20))}",
+            success: failed.Count == 0);
 
         await InvokeAsync(StateHasChanged);
+    }
+
+    private static bool IsModernRebootPhone(PhoneInfo phone)
+    {
+        var firmware = ValueFrom(phone.StatusFields, "Firmware Version", "FirmwareVersion", "Firmware");
+        var family = ModelResolver.ResolveFamily(phone.Model, firmware);
+        return family is YealinkPhoneFamily.ModernApi or YealinkPhoneFamily.WSeries ||
+            phone.Model?.Contains("T4", StringComparison.OrdinalIgnoreCase) == true ||
+            phone.Model?.Contains("T5", StringComparison.OrdinalIgnoreCase) == true ||
+            phone.Model?.Contains("W70B", StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    private static string? ValueFrom(Dictionary<string, string> fields, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (fields.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
+                return value;
+        }
+
+        return null;
     }
 
     private async Task StartScanNew()
@@ -326,8 +408,11 @@ else if (!_scanning)
             .Where(p => (p.ConfigFields?.Count ?? 0) > 0)
             .ToDictionary(p => p.IpAddress, p => p.ConfigFields, StringComparer.OrdinalIgnoreCase);
 
-        Store.Clear();
-        _phones = new();
+        foreach (var phone in Store.All.Where(IsInSelectedLocation).ToList())
+            Store.Remove(phone.IpAddress);
+
+        _selectedPhones.Clear();
+        _phones = Store.All.ToList();
         await InvokeAsync(StateHasChanged);
         await ScanInternal(scanExisting: true, cachedConfig);
     }
@@ -340,7 +425,8 @@ else if (!_scanning)
         _scanStart = DateTime.UtcNow;
         await InvokeAsync(StateHasChanged);
 
-        var subnets = Config.GetSection("Yealink:Subnets").Get<string[]>() ?? Array.Empty<string>();
+        var configuredSubnets = Config.GetSection("Yealink:Subnets").Get<string[]>() ?? Array.Empty<string>();
+        var subnets = LocationStore.GetScanSubnets(AppAuth.CurrentUser?.LocationId, configuredSubnets).ToArray();
         var creds = Credentials.GetAdminCredentials();
 
         if (creds == null)
@@ -351,8 +437,22 @@ else if (!_scanning)
             return;
         }
 
+        if (subnets.Length == 0)
+        {
+            _lastScanLog = "Для выбранной локации не заданы подсети сканирования.";
+            _scanning = false;
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
         try
         {
+            AuditLog.Log(
+                scanExisting ? "Обновление списка телефонов" : "Сканирование новых телефонов",
+                CurrentAuditUser(),
+                CurrentAuditLocation(),
+                details: $"Подсети: {string.Join(", ", subnets)}");
+
             await foreach (var phone in Scanner.ScanAsync(subnets, scanExisting))
             {
                 if ((phone.ConfigFields?.Count ?? 0) == 0 &&
@@ -374,10 +474,21 @@ else if (!_scanning)
             }
 
             _lastScanLog = $"Сканирование завершено. Найдено: {_foundCount}";
+            AuditLog.Log(
+                scanExisting ? "Обновление списка телефонов завершено" : "Сканирование новых телефонов завершено",
+                CurrentAuditUser(),
+                CurrentAuditLocation(),
+                details: $"Найдено: {_foundCount}");
         }
         catch (Exception ex)
         {
             _lastScanLog = $"Ошибка сканирования: {ex.Message}";
+            AuditLog.Log(
+                scanExisting ? "Ошибка обновления списка телефонов" : "Ошибка сканирования новых телефонов",
+                CurrentAuditUser(),
+                CurrentAuditLocation(),
+                details: ex.Message,
+                success: false);
         }
 
         _phones = Store.All.ToList();
@@ -453,6 +564,23 @@ else if (!_scanning)
         catch (Exception ex)
         {
             _manualResult = $"Исключение: {ex.GetType().Name}: {ex.Message}";
+            AuditLog.Log(
+                "Ручная проверка IP",
+                CurrentAuditUser(),
+                CurrentAuditLocation(),
+                phoneIp: _manualIp,
+                details: ex.Message,
+                success: false);
+        }
+
+        if (!_manualResult.StartsWith("Исключение:", StringComparison.OrdinalIgnoreCase))
+        {
+            AuditLog.Log(
+                "Ручная проверка IP",
+                CurrentAuditUser(),
+                CurrentAuditLocation(),
+                phoneIp: _manualIp,
+                details: FirstLine(_manualResult));
         }
 
         _checkingManual = false;
@@ -462,12 +590,78 @@ else if (!_scanning)
     private void OnCredentialsChanged()
     {
         _phones = Store.All.ToList();
+        PruneSelectionForLocation();
         _ = InvokeAsync(StateHasChanged);
     }
+
+    private void OnStoreChanged()
+    {
+        _phones = Store.All.ToList();
+        PruneSelectionForLocation();
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void OnAppAuthChanged()
+    {
+        PruneSelectionForLocation();
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void OnLocationsChanged()
+    {
+        PruneSelectionForLocation();
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private bool IsInSelectedLocation(PhoneInfo phone) =>
+        LocationStore.IsIpInLocation(phone.IpAddress, AppAuth.CurrentUser?.LocationId);
+
+    private string CurrentAuditUser() => AppAuth.CurrentUser?.Username ?? "system";
+
+    private string CurrentAuditLocation() => AppAuth.CurrentUser?.LocationName ?? string.Empty;
+
+    private static string FirstLine(string value) =>
+        (value ?? string.Empty)
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault() ?? string.Empty;
+
+    private void PruneSelectionForLocation()
+    {
+        var visibleIps = LocationPhones
+            .Select(phone => phone.IpAddress)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        _selectedPhones.RemoveWhere(ip => !visibleIps.Contains(ip));
+    }
+
+    private static string AccountSummary(PhoneInfo phone)
+    {
+        var accounts = phone.Accounts
+            .Where(x => !string.IsNullOrWhiteSpace(x.UserName) ||
+                        !string.IsNullOrWhiteSpace(x.RegisterName) ||
+                        !string.IsNullOrWhiteSpace(x.Label) ||
+                        !string.IsNullOrWhiteSpace(x.DisplayName))
+            .OrderByDescending(x => x.Line == phone.DefaultAccountLine)
+            .ThenBy(x => x.Line)
+            .ToList();
+
+        if (accounts.Count == 0)
+            return string.IsNullOrWhiteSpace(phone.Account) ? "-" : phone.Account;
+
+        var primary = accounts[0];
+        var label = FirstNonEmpty(primary.UserName, primary.RegisterName, primary.Label, primary.DisplayName);
+        return accounts.Count == 1 ? label : $"{label} +{accounts.Count - 1}";
+    }
+
+    private static string FirstNonEmpty(params string?[] values) =>
+        values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
 
     public void Dispose()
     {
         Credentials.Changed -= OnCredentialsChanged;
+        Store.Changed -= OnStoreChanged;
+        AppAuth.Changed -= OnAppAuthChanged;
+        LocationStore.Changed -= OnLocationsChanged;
     }
 
     private class ByteArrayComparer : IComparer<byte[]>
